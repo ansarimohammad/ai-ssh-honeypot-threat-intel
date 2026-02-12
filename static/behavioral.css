@@ -1,0 +1,23 @@
+/* Behavioral Intelligence Page Specific CSS */
+
+/* Ensure charts have explicit containers */
+.chart-container {
+    position: relative;
+    width: 100%;
+    min-height: 300px;
+}
+
+/* Enhancements for the Radar Chart */
+#behaviorHeatmapChart {
+    max-height: 400px;
+}
+
+/* Anomaly Table Highlighting */
+#anomalyTable td .badge {
+    font-size: 0.85em;
+}
+
+/* Cluster Profile Table */
+#clusterProfileTable th {
+    color: var(--accent-secondary);
+}
