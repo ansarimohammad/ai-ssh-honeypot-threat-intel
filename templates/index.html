@@ -1,0 +1,98 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h2 class="text-white mb-4">SOC Overview</h2>
+
+<!-- KPI Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-body">
+                <h6 class="card-title text-muted">Total Sessions</h6>
+                <h2 class="display-6 fw-bold" id="kpi-total">Loading...</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-body">
+                <h6 class="card-title text-danger">High Risk Detected</h6>
+                <h2 class="display-6 fw-bold text-danger" id="kpi-risk">Loading...</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-body">
+                <h6 class="card-title text-warning">Anomalies</h6>
+                <h2 class="display-6 fw-bold text-warning" id="kpi-anomalies">Loading...</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-body">
+                <h6 class="card-title text-info">Active Countries</h6>
+                <h2 class="display-6 fw-bold text-info" id="kpi-countries">Loading...</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <!-- Risk Distribution Chart -->
+    <div class="col-md-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Risk Level Distribution</div>
+            <div class="card-body">
+                <div style="height: 300px; position: relative;">
+                    <canvas id="riskDistChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Time Series Activity -->
+    <div class="col-md-8">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Attack Activity Over Time</div>
+            <div class="card-body">
+                <div style="height: 300px; position: relative;">
+                    <canvas id="activityChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Top High Risk List -->
+    <div class="col-md-12">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary text-danger">Top High Risk Sessions</div>
+            <div class="card-body overflow-auto" style="max-height: 400px;">
+                <table class="table table-dark table-sm table-hover" id="topRiskTable">
+                    <thead>
+                        <tr>
+                            <th>Session ID</th>
+                            <th>IP Address</th>
+                            <th>Country</th>
+                            <th>Risk Score</th>
+                            <th>Risk Level</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        fetchOverviewData();
+    });
+</script>
+{% endblock %}
