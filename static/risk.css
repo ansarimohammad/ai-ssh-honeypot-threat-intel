@@ -1,0 +1,15 @@
+/* Risk Engine Page CSS */
+
+.chart-container {
+    position: relative;
+    width: 100%;
+    min-height: 300px;
+}
+
+#highRiskListTable td {
+    vertical-align: middle;
+}
+
+.metric-card h3 {
+    margin-bottom: 0;
+}

@@ -1,0 +1,122 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='risk.css') }}">
+
+<h2 class="text-white mb-4">ML Risk Engine</h2>
+
+<div class="row g-4 mb-4">
+    <!-- Model Metrics -->
+    <div class="col-md-8">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Model Performance Metrics</div>
+            <div class="card-body">
+                <div class="row text-center h-100 align-items-center" id="modelMetrics">
+                    <div class="col metric-card">
+                        <h5 class="text-muted small text-uppercase">Accuracy</h5>
+                        <h3 class="text-success display-6 fw-bold" id="metric-acc">--</h3>
+                    </div>
+                    <div class="col metric-card">
+                        <h5 class="text-muted small text-uppercase">Precision</h5>
+                        <h3 class="text-info display-6 fw-bold" id="metric-prec">--</h3>
+                    </div>
+                    <div class="col metric-card">
+                        <h5 class="text-muted small text-uppercase">Recall</h5>
+                        <h3 class="text-primary display-6 fw-bold" id="metric-rec">--</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Summary -->
+    <div class="col-md-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Model Summary</div>
+            <div class="card-body" id="modelSummaryContent">
+                <p class="text-muted">Loading summary...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <!-- Risk Prediction Chart -->
+    <div class="col-md-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Risk Score Distribution (Histogram)</div>
+            <div class="card-body">
+                <div style="height: 350px; position: relative;">
+                    <canvas id="riskDistHistogram"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Risk Prediction Chart (Cluster) -->
+    <div class="col-md-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Risk vs Cluster Analysis</div>
+            <div class="card-body">
+                <div style="height: 350px; position: relative;">
+                    <canvas id="riskPredictionChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- High Risk Session Rank List -->
+    <div class="col-md-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary text-danger">Top High Risk Sessions (Ranked)</div>
+            <div class="card-body overflow-auto" style="max-height: 400px;">
+                <table class="table table-dark table-sm table-hover" id="highRiskListTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Session</th>
+                            <th>IP</th>
+                            <th>Risk</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Feature Importance -->
+    <div class="col-md-6">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Global Feature Importance (Random Forest)</div>
+            <div class="card-body">
+                <div style="height: 400px; position: relative;">
+                    <canvas id="featureImpChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SHAP Values -->
+    <div class="col-md-6">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">SHAP Explainability (Mean Absolute Value)</div>
+            <div class="card-body">
+                <div style="height: 400px; position: relative;">
+                    <canvas id="shapChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='risk.js') }}"></script>
+{% endblock %}
