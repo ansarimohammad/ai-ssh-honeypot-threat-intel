@@ -430,4 +430,8 @@ def upload_file():
 if __name__ == '__main__':
     # Initial load
     load_and_train()
-    app.run(debug=True, port=5000)
+    # Use os.environ.get for port, default to 5000
+    # Set debug to False for production
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_ENV') == 'development'
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
