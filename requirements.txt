@@ -1,0 +1,10 @@
+flask
+pandas
+numpy
+scikit-learn
+xgboost
+shap
+matplotlib
+geoip2
+requests
+gunicorn
