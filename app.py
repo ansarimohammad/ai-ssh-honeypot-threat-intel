@@ -88,7 +88,7 @@ def load_and_train():
             
             # Ensure 'timestamp' exists for time series
             if 'timestamp' not in df.columns:
-                df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='H')
+                df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='h')
             
             # Ensure PCA columns exist for scatter plot
             if 'pca_x' not in df.columns:
