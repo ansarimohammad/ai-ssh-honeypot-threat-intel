@@ -97,3 +97,52 @@ a:hover {
 h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5, .h6 {
     color: #ffffff;
 }
+
+/* --- Mobile Responsiveness --- */
+@media (max-width: 768px) {
+    #sidebar-wrapper {
+        margin-left: -250px;
+        transition: margin 0.25s ease-out;
+        position: fixed;
+        height: 100vh;
+        z-index: 1000;
+    }
+    
+    #wrapper.toggled #sidebar-wrapper {
+        margin-left: 0;
+    }
+
+    /* Overlay for sidebar */
+    .sidebar-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 900;
+    }
+    .sidebar-overlay.active {
+        display: block;
+    }
+
+    #page-content-wrapper {
+        width: 100%;
+        position: relative;
+    }
+
+    .container-fluid {
+        padding: 0.75rem !important;
+    }
+    
+    /* Chart containers on mobile */
+    .card-body canvas {
+        max-height: 250px !important;
+    }
+    
+    /* Table scrolling on mobile */
+    .table-responsive {
+        overflow-x: auto;
+    }
+}

@@ -1,14 +1,14 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='behavioral.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/behavioral.css') }}">
 
 <h2 class="text-white mb-4">Behavioral Intelligence</h2>
 
 <!-- Row 1: Cluster Scatter (Duration vs Events) & Anomaly List -->
 <div class="row g-4 mb-4">
     <!-- Cluster Scatter Plot -->
-    <div class="col-md-8">
+    <div class="col-12 col-lg-8">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
                 Session Clusters: Duration vs Events
@@ -23,7 +23,7 @@
     </div>
 
     <!-- Anomaly List -->
-    <div class="col-md-4">
+    <div class="col-12 col-lg-4">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary text-warning">
                 <i class="fas fa-exclamation-triangle me-2"></i>Detected Anomalies
@@ -48,7 +48,7 @@
 
 <!-- Row 2: Cluster Profile Table & Behavior Heatmap -->
 <div class="row g-4 mb-4">
-    <div class="col-md-6">
+    <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
                 <i class="fas fa-table me-2"></i>Cluster Profile Table (Average Behaviors)
@@ -72,7 +72,7 @@
         </div>
     </div>
 
-    <div class="col-md-6">
+    <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
                 <i class="fas fa-th me-2"></i>Behavior Heatmap (Features vs Clusters)
@@ -88,7 +88,7 @@
 
 <!-- Row 3: Stability Plots (Static Image) -->
 <div class="row g-4">
-    <div class="col-md-12">
+    <div class="col-12">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
                 <i class="fas fa-image me-2"></i>Cluster Stability Analysis
@@ -104,5 +104,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='behavioral.js') }}"></script>
+<script src="{{ url_for('static', filename='js/behavioral.js') }}"></script>
 {% endblock %}

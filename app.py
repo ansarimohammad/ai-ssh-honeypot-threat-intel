@@ -427,11 +427,24 @@ def upload_file():
         load_and_train()
         return redirect(url_for('index'))
 
-if __name__ == '__main__':
-    # Initial load
+# Initialize data on startup (ensure this runs for Gunicorn workers)
+try:
+    print("🚀 Initializing application data...")
     load_and_train()
+except Exception as e:
+    print(f"⚠️ Startup initialization warning: {e}")
+
+if __name__ == '__main__':
+    # Initial load is already handled above
     # Use os.environ.get for port, default to 5000
     # Set debug to False for production
     port = int(os.environ.get('PORT', 5000))
+    # Explicitly disable debug mode unless FLASK_ENV is set to development
     debug_mode = os.environ.get('FLASK_ENV') == 'development'
+    
+    if debug_mode:
+        print("⚠️ Running in DEBUG mode")
+    else:
+        print("✅ Running in PRODUCTION mode")
+        
     app.run(debug=debug_mode, host='0.0.0.0', port=port)

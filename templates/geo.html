@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='geo.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/geo.css') }}">
 
 <h2 class="text-white mb-4">Geo & Internal Threat Landscape</h2>
 
@@ -24,17 +24,17 @@
 <div id="global-view">
     <div class="row g-4">
         <!-- Map -->
-        <div class="col-md-8">
-            <div class="card bg-dark border-secondary text-white h-100" style="min-height: 600px;">
+        <div class="col-12 col-lg-8">
+            <div class="card bg-dark border-secondary text-white h-100" style="min-height: 400px; max-height: 600px;">
                 <div class="card-header border-secondary">Global Threat Map (Public IPs)</div>
                 <div class="card-body p-0">
-                    <div id="mapid" style="width: 100%; height: 100%; min-height: 600px;"></div>
+                    <div id="mapid" style="width: 100%; height: 100%; min-height: 400px;"></div>
                 </div>
             </div>
         </div>
 
         <!-- Right Side Charts -->
-        <div class="col-md-4">
+        <div class="col-12 col-lg-4">
             <div class="row g-4">
                 <!-- Country Risk Table -->
                 <div class="col-12">
@@ -78,7 +78,7 @@
     
     <div class="row g-4 mb-4">
         <!-- Top Internal IPs Chart -->
-        <div class="col-md-6">
+        <div class="col-12 col-md-6">
             <div class="card bg-dark border-secondary text-white h-100">
                 <div class="card-header border-secondary">Top Internal IPs by Risk Score</div>
                 <div class="card-body">
@@ -90,7 +90,7 @@
         </div>
 
         <!-- Internal Risk Distribution -->
-        <div class="col-md-6">
+        <div class="col-12 col-md-6">
             <div class="card bg-dark border-secondary text-white h-100">
                 <div class="card-header border-secondary">Internal Risk Level Distribution</div>
                 <div class="card-body">
@@ -104,7 +104,7 @@
 
     <div class="row g-4">
         <!-- Internal Activity Chart -->
-        <div class="col-md-12">
+        <div class="col-12">
             <div class="card bg-dark border-secondary text-white h-100">
                 <div class="card-header border-secondary">Most Active Internal Hosts (Event Count)</div>
                 <div class="card-body">
@@ -120,5 +120,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='geo.js') }}"></script>
+<script src="{{ url_for('static', filename='js/geo.js') }}"></script>
 {% endblock %}
