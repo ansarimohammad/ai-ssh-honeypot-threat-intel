@@ -1,0 +1,23 @@
+/* Geo Threat Landscape Styles */
+
+#mapid {
+    z-index: 1;
+}
+
+/* Toggle Switch Styling */
+.btn-group .btn {
+    border-radius: 0;
+}
+.btn-group .btn:first-child {
+    border-top-left-radius: 20px;
+    border-bottom-left-radius: 20px;
+}
+.btn-group .btn:last-child {
+    border-top-right-radius: 20px;
+    border-bottom-right-radius: 20px;
+}
+
+/* Ensure chart containers have consistent height */
+.card-body canvas {
+    max-height: 100%;
+}
