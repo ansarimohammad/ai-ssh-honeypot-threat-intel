@@ -480,6 +480,10 @@ def upload_file():
     if file.filename == '':
         return redirect(request.url)
     if file:
+        # Ensure upload folder exists
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            os.makedirs(app.config['UPLOAD_FOLDER'])
+            
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], 'final_dashboard_dataset.csv'))
         load_data()
         return redirect(url_for('index'))
