@@ -2,26 +2,26 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for
 import pandas as pd
 import os
 import ipaddress
-from ml_engine import MLEngine
+# Removed MLEngine import as training is no longer needed
+# from ml_engine import MLEngine
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'data'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 
-# Global Engine Instance
-engine = MLEngine()
+# Global Data Variables
 current_data = None
 model_metrics = {}
 feature_importance = {}
 clustering_stats = {}
 
-def load_and_train():
+def load_data():
     global current_data, model_metrics, feature_importance, clustering_stats
     # Load only the final dashboard dataset
     data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'final_dashboard_dataset.csv')
     
     if os.path.exists(data_path):
-        print("Loading data and training models...")
+        print("Loading pre-processed data...")
         try:
             df = pd.read_csv(data_path)
             
@@ -35,12 +35,35 @@ def load_and_train():
                 'longitude': 'lon',
                 'event_count': 'events_count',
                 'session_duration': 'duration',
-                'behavior_cluster': 'cluster'
+                'behavior_cluster': 'cluster',
+                # Map session_start to timestamp immediately
+                'session_start': 'timestamp' 
             }
             
             # Rename columns
             df = df.rename(columns=column_mapping)
             
+            # ===== BOOLEAN HANDLING =====
+            # Convert 'TRUE'/'FALSE' strings to actual booleans for 'is_anomaly' and others
+            bool_cols = ['is_anomaly', 'high_event_activity', 'long_session', 'credential_guessing', 'command_heavy']
+            for col in bool_cols:
+                if col in df.columns:
+                    # Convert to string first, then map 'TRUE'/'FALSE' (case insensitive) to boolean
+                    df[col] = df[col].astype(str).str.upper().map({'TRUE': True, 'FALSE': False}).fillna(False)
+
+            # ===== TIMESTAMP HANDLING =====
+            # Parse 'timestamp' (was session_start) with DD-MM-YYYY HH:MM format
+            if 'timestamp' in df.columns:
+                try:
+                    # Try parsing with dayfirst=True for DD-MM-YYYY
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], dayfirst=True, errors='coerce')
+                except Exception as e:
+                    print(f"⚠️ Timestamp parsing warning: {e}")
+                    # Fallback
+                    df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='h')
+            else:
+                 df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='h')
+
             # ===== NORMALIZE RISK SCORE TO 0-100 =====
             # Your data has z-scores (e.g., -0.22, 4.47), convert to 0-100
             def map_risk_to_100(score):
@@ -81,14 +104,15 @@ def load_and_train():
             print(f"\nRisk Level Distribution:")
             print(df['predicted_risk_level'].value_counts())
             
-            # Ensure 'is_anomaly' column exists
+            # Ensure 'is_anomaly' column exists (already handled by boolean conversion above, but fallback just in case)
             if 'is_anomaly' not in df.columns:
                 # Mark High Risk as anomalies
                 df['is_anomaly'] = df['predicted_risk_level'].str.contains('High', case=False, na=False)
             
-            # Ensure 'timestamp' exists for time series
+            # Ensure 'timestamp' exists for time series - REMOVED REDUNDANT BLOCK
+            # (Timestamp is now handled at the top with session_start mapping)
             if 'timestamp' not in df.columns:
-                df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='h')
+                 df['timestamp'] = pd.date_range(start='2024-01-01', periods=len(df), freq='h')
             
             # Ensure PCA columns exist for scatter plot
             if 'pca_x' not in df.columns:
@@ -108,14 +132,35 @@ def load_and_train():
             if 'bytes_transferred' not in df.columns:
                 df['bytes_transferred'] = 0
             
-            # Mock metrics if training fails
-            model_metrics = {
-                'accuracy': 0.85,
-                'precision': 0.82,
-                'recall': 0.88,
-                'f1_score': 0.85
-            }
+            # Extract ML Metrics from the dataset (using the first row as they are constant per run usually, or mean)
+            if 'ml_accuracy' in df.columns:
+                model_metrics = {
+                    'accuracy': float(df['ml_accuracy'].mean()),
+                    'precision': float(df['ml_precision'].mean()) if 'ml_precision' in df.columns else 0.0,
+                    'recall': float(df['ml_recall'].mean()) if 'ml_recall' in df.columns else 0.0,
+                    # 'f1_score': float(df['ml_f1'].mean()) if 'ml_f1' in df.columns else 0.0 
+                }
+            else:
+                 model_metrics = {
+                    'accuracy': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0
+                }
+
+            # Extract Clustering Stability
+            if 'cluster_stability' in df.columns:
+                 # Filter out -1 noise if needed, or take mean of positive values
+                 valid_stability = df[df['cluster_stability'] >= 0]['cluster_stability']
+                 if not valid_stability.empty:
+                     clustering_stats['silhouette'] = float(valid_stability.mean())
+                 else:
+                     clustering_stats['silhouette'] = 0.0
+            else:
+                 clustering_stats['silhouette'] = 0.0
             
+            # Mock Feature Importance (still needed as it's not in CSV columns usually)
+            # Unless you have columns like 'feat_imp_duration', we keep this mock or look for a specific file.
+            # For now, we keep the mock but update the comment.
             feature_importance = {
                 'risk_score': 0.35,
                 'events_count': 0.25,
@@ -123,18 +168,16 @@ def load_and_train():
                 'unique_commands': 0.20
             }
             
-            clustering_stats['silhouette'] = 0.65
-            
             current_data = df
             
             # Print summary
             high_risk_count = (df['predicted_risk_level'].str.contains('High', case=False, na=False)).sum()
-            print(f"\n✓ Training complete. Loaded {len(df)} sessions.")
+            print(f"\n✓ Data load complete. Loaded {len(df)} sessions.")
             print(f"✓ High Risk sessions: {high_risk_count}")
             print(f"✓ Countries: {df['country'].nunique()}")
             
         except Exception as e:
-            print(f"❌ Error during training: {e}")
+            print(f"❌ Error during data loading: {e}")
             import traceback
             traceback.print_exc()
     else:
@@ -267,11 +310,24 @@ def get_risk_data():
         
         print(f"📊 Histogram created: {len(hist_labels)} bins, {sum(hist_data)} total sessions")
 
+        # SHAP Values (Mock or Real)
+        shap_values = {}
+        if not feature_importance:
+             shap_values = {
+                'risk_score': 0.35,
+                'events_count': 0.25,
+                'duration': 0.20,
+                'unique_commands': 0.20
+            }
+        else:
+             shap_values = feature_importance
+
         response_data = {
             'distribution': risk_dist,
             'time_series': time_series,
             'top_risk_sessions': top_risk_records,
             'feature_importance': feature_importance,
+            'shap_values': shap_values, # Add SHAP values to response
             'metrics': model_metrics,
             'risk_by_cluster': risk_by_cluster,
             'risk_histogram': {
@@ -326,7 +382,8 @@ def get_behavioral_data():
             anomalies = anomaly_data.fillna('').to_dict(orient='records')
         
         # Stability Plot
-        stability_plot = engine.generate_stability_plot(current_data)
+        # Since we removed MLEngine, we return None or a placeholder
+        stability_plot = None 
         
         return jsonify({
             'scatter': scatter_data,
@@ -424,13 +481,13 @@ def upload_file():
         return redirect(request.url)
     if file:
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], 'final_dashboard_dataset.csv'))
-        load_and_train()
+        load_data()
         return redirect(url_for('index'))
 
 # Initialize data on startup (ensure this runs for Gunicorn workers)
 try:
     print("🚀 Initializing application data...")
-    load_and_train()
+    load_data()
 except Exception as e:
     print(f"⚠️ Startup initialization warning: {e}")
 

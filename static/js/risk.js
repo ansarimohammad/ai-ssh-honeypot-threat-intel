@@ -31,8 +31,8 @@ async function fetchRiskData() {
         }
         
         // SHAP Values
-        if (data.shap_summary) {
-            renderShapChart(data.shap_summary);
+        if (data.shap_values) {
+            renderShapChart(data.shap_values);
         }
         
         // Risk Prediction Chart (ML Score vs Cluster)
