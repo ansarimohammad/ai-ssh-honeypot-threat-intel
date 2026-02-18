@@ -5,14 +5,12 @@
 
 <h2 class="text-white mb-4">Behavioral Intelligence</h2>
 
-<!-- Row 1: Cluster Scatter (Duration vs Events) & Anomaly List -->
+<!-- Row 1: Main Cluster Visualization (Full Width) -->
 <div class="row g-4 mb-4">
-    <!-- Cluster Scatter Plot -->
-    <div class="col-12 col-lg-8">
+    <div class="col-12">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
-                Session Clusters: Duration vs Events
-                <span class="badge bg-info float-end" id="silhouetteScore">Silhouette: --</span>
+                <i class="fas fa-project-diagram me-2"></i>Cluster Visualization (Duration vs Events)
             </div>
             <div class="card-body">
                 <div style="height: 400px; position: relative;">
@@ -21,18 +19,20 @@
             </div>
         </div>
     </div>
+</div>
 
-    <!-- Anomaly List -->
-    <div class="col-12 col-lg-4">
+<!-- Row 2: Anomalies & Distribution -->
+<div class="row g-4 mb-4">
+    <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
-            <div class="card-header border-secondary text-warning">
-                <i class="fas fa-exclamation-triangle me-2"></i>Detected Anomalies
+            <div class="card-header border-secondary">
+                <i class="fas fa-exclamation-triangle me-2 text-warning"></i>Detected Anomalies
             </div>
-            <div class="card-body overflow-auto" style="max-height: 400px;">
+            <div class="card-body overflow-auto">
                 <table class="table table-dark table-sm table-hover" id="anomalyTable">
                     <thead>
                         <tr>
-                            <th>Session ID</th>
+                            <th>Session</th>
                             <th>IP Address</th>
                             <th>Cluster</th>
                         </tr>
@@ -44,34 +44,23 @@
             </div>
         </div>
     </div>
-</div>
 
-<!-- Row 2: Cluster Profile Table & Behavior Heatmap -->
-<div class="row g-4 mb-4">
     <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
-                <i class="fas fa-table me-2"></i>Cluster Profile Table (Average Behaviors)
+                <i class="fas fa-chart-pie me-2"></i>Anomalous Attacker Types
             </div>
-            <div class="card-body overflow-auto">
-                <table class="table table-dark table-sm table-hover" id="clusterProfileTable">
-                    <thead>
-                        <tr>
-                            <th>Cluster</th>
-                            <th>Duration (avg)</th>
-                            <th>Events (avg)</th>
-                            <th>Bytes (avg)</th>
-                            <th>Velocity (avg)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Populated by JS -->
-                    </tbody>
-                </table>
+            <div class="card-body">
+                <div style="height: 350px; position: relative;">
+                    <canvas id="anomalyDistributionChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
+</div>
 
+<!-- Row 3: Heatmap & Stability -->
+<div class="row g-4">
     <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
@@ -84,18 +73,20 @@
             </div>
         </div>
     </div>
-</div>
 
-<!-- Row 3: Stability Plots (Static Image) -->
-<div class="row g-4">
-    <div class="col-12">
+    <div class="col-12 col-lg-6">
         <div class="card bg-dark border-secondary text-white h-100">
             <div class="card-header border-secondary">
-                <i class="fas fa-image me-2"></i>Cluster Stability Analysis
+                <i class="fas fa-balance-scale me-2"></i>Cluster Stability Analysis
             </div>
-            <div class="card-body text-center">
-                <img id="stabilityPlotImg" src="" alt="Stability Plot" class="img-fluid rounded" style="max-height: 400px; display: none;">
-                <p id="stabilityLoading" class="text-muted">Loading plot...</p>
+            <div class="card-body">
+                <div style="height: 350px; position: relative;">
+                     <!-- Canvas for Chart.js -->
+                    <canvas id="stabilityChart"></canvas>
+                </div>
+                 <p class="text-muted small mt-2 text-center">
+                    Higher stability scores indicate consistent, predictable attacker behavior patterns within the cluster.
+                </p>
             </div>
         </div>
     </div>

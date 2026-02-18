@@ -25,14 +25,24 @@ async function fetchRiskData() {
             console.warn('Metrics data is missing');
         }
 
-        // Feature Importance
-        if (data.feature_importance) {
-            renderFeatureImpChart(data.feature_importance);
+        // Attack Vector Analysis (Radar)
+        if (data.attack_vector) {
+            renderAttackVectorChart(data.attack_vector);
         }
         
-        // SHAP Values
-        if (data.shap_values) {
-            renderShapChart(data.shap_values);
+        // Threat Archetype Distribution
+        if (data.threat_archetype) {
+            renderThreatArchetypeChart(data.threat_archetype);
+        }
+
+        // Campaign Severity Analysis
+        if (data.campaign_analysis) {
+            renderCampaignSeverityChart(data.campaign_analysis);
+        }
+
+        // Risk Factor Breakdown (Explainability)
+        if (data.risk_factors) {
+            renderRiskFactorChart(data.risk_factors);
         }
         
         // Risk Prediction Chart (ML Score vs Cluster)
@@ -76,59 +86,140 @@ function renderModelSummary(metrics) {
     `;
 }
 
-function renderFeatureImpChart(data) {
-    const ctx = document.getElementById('featureImpChart');
+function renderAttackVectorChart(data) {
+    const ctx = document.getElementById('attackVectorChart');
     if (!ctx) return;
     
     const existingChart = Chart.getChart(ctx);
     if (existingChart) existingChart.destroy();
 
-    const sorted = Object.entries(data).sort((a, b) => b[1] - a[1]);
-    
     new Chart(ctx, {
-        type: 'bar',
+        type: 'radar',
         data: {
-            labels: sorted.map(x => x[0]),
+            labels: Object.keys(data),
             datasets: [{
-                label: 'Importance',
-                data: sorted.map(x => x[1]),
-                backgroundColor: '#03dac6',
-                borderRadius: 4
+                label: 'Avg Attack Intensity',
+                data: Object.values(data),
+                backgroundColor: 'rgba(3, 218, 198, 0.2)',
+                borderColor: '#03dac6',
+                pointBackgroundColor: '#03dac6',
+                pointBorderColor: '#fff',
+                pointHoverBackgroundColor: '#fff',
+                pointHoverBorderColor: '#03dac6'
             }]
         },
         options: {
-            indexAxis: 'y',
             responsive: true,
             maintainAspectRatio: false,
             scales: {
-                x: { grid: { color: '#333' } },
-                y: { grid: { display: false } }
+                r: {
+                    angleLines: { color: '#444' },
+                    grid: { color: '#333' },
+                    pointLabels: { color: '#ccc' },
+                    ticks: { backdropColor: 'transparent', color: '#888' }
+                }
             },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+function renderThreatArchetypeChart(data) {
+    const ctx = document.getElementById('threatArchetypeChart');
+    if (!ctx) return;
+    
+    const existingChart = Chart.getChart(ctx);
+    if (existingChart) existingChart.destroy();
+
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(data),
+            datasets: [{
+                data: Object.values(data),
+                backgroundColor: ['#cf6679', '#bb86fc', '#03dac6', '#ffb74d', '#3700b3'],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
             plugins: {
-                legend: { display: false }
+                legend: { position: 'right', labels: { color: '#ccc' } }
             }
         }
     });
 }
 
-function renderShapChart(data) {
-    const ctx = document.getElementById('shapChart');
+function renderCampaignSeverityChart(data) {
+    const ctx = document.getElementById('campaignSeverityChart');
     if (!ctx) return;
     
     const existingChart = Chart.getChart(ctx);
     if (existingChart) existingChart.destroy();
 
-    const sorted = Object.entries(data).sort((a, b) => b[1] - a[1]);
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: Object.keys(data),
+            datasets: [{
+                label: 'Sessions',
+                data: Object.values(data),
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.7)', // High - Red
+                    'rgba(255, 205, 86, 0.7)', // Medium - Yellow
+                    'rgba(75, 192, 192, 0.7)'  // Low - Green
+                ],
+                borderColor: [
+                    'rgb(255, 99, 132)',
+                    'rgb(255, 205, 86)',
+                    'rgb(75, 192, 192)'
+                ],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#333' } },
+                x: { grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+function renderRiskFactorChart(data) {
+    const ctx = document.getElementById('riskFactorChart');
+    if (!ctx) return;
     
+    const existingChart = Chart.getChart(ctx);
+    if (existingChart) existingChart.destroy();
+
+    // Sort factors by contribution
+    const sorted = Object.entries(data).sort((a, b) => b[1] - a[1]);
+
     new Chart(ctx, {
         type: 'bar',
         data: {
             labels: sorted.map(x => x[0]),
             datasets: [{
-                label: 'Mean |SHAP|',
+                label: 'Contribution (%)',
                 data: sorted.map(x => x[1]),
-                backgroundColor: '#bb86fc',
-                borderRadius: 4
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.7)',
+                    'rgba(54, 162, 235, 0.7)',
+                    'rgba(255, 206, 86, 0.7)',
+                    'rgba(75, 192, 192, 0.7)'
+                ],
+                borderColor: [
+                    'rgba(255, 99, 132, 1)',
+                    'rgba(54, 162, 235, 1)',
+                    'rgba(255, 206, 86, 1)',
+                    'rgba(75, 192, 192, 1)'
+                ],
+                borderWidth: 1
             }]
         },
         options: {
@@ -136,12 +227,15 @@ function renderShapChart(data) {
             responsive: true,
             maintainAspectRatio: false,
             scales: {
-                x: { grid: { color: '#333' } },
+                x: { 
+                    beginAtZero: true,
+                    max: 100,
+                    grid: { color: '#333' },
+                    title: { display: true, text: 'Contribution to Risk (%)' }
+                },
                 y: { grid: { display: false } }
             },
-            plugins: {
-                legend: { display: false }
-            }
+            plugins: { legend: { display: false } }
         }
     });
 }

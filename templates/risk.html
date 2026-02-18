@@ -90,26 +90,57 @@
 </div>
 
 <div class="row g-4">
-    <!-- Feature Importance -->
-    <div class="col-12 col-lg-6">
+    <!-- Attack Vector Analysis (Radar) -->
+    <div class="col-12 col-lg-4">
         <div class="card bg-dark border-secondary text-white h-100">
-            <div class="card-header border-secondary">Global Feature Importance (Random Forest)</div>
+            <div class="card-header border-secondary">Attack Vector Profile (Avg)</div>
             <div class="card-body">
-                <div style="height: 400px; position: relative;">
-                    <canvas id="featureImpChart"></canvas>
+                <div style="height: 350px; position: relative;">
+                    <canvas id="attackVectorChart"></canvas>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- SHAP Values -->
-    <div class="col-12 col-lg-6">
+    <!-- Threat Archetype Distribution -->
+    <div class="col-12 col-lg-4">
         <div class="card bg-dark border-secondary text-white h-100">
-            <div class="card-header border-secondary">SHAP Explainability (Mean Absolute Value)</div>
+            <div class="card-header border-secondary">Threat Archetype Distribution</div>
             <div class="card-body">
-                <div style="height: 400px; position: relative;">
-                    <canvas id="shapChart"></canvas>
+                <div style="height: 350px; position: relative;">
+                    <canvas id="threatArchetypeChart"></canvas>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Campaign Severity Analysis -->
+    <div class="col-12 col-lg-4">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">Campaign Severity Levels</div>
+            <div class="card-body">
+                <div style="height: 350px; position: relative;">
+                    <canvas id="campaignSeverityChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-2">
+    <!-- Risk Factor Breakdown (Explainability) -->
+    <div class="col-12">
+        <div class="card bg-dark border-secondary text-white h-100">
+            <div class="card-header border-secondary">
+                <i class="fas fa-lightbulb me-2 text-warning"></i>Risk Factor Breakdown (Explainability)
+            </div>
+            <div class="card-body">
+                <div style="height: 300px; position: relative;">
+                    <canvas id="riskFactorChart"></canvas>
+                </div>
+                <p class="text-muted small mt-2 text-center">
+                    Shows the percentage contribution of different factors to the overall risk score across all sessions.
+                </p>
             </div>
         </div>
     </div>

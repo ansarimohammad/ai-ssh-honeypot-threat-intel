@@ -12,11 +12,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 # Global Data Variables
 current_data = None
 model_metrics = {}
-feature_importance = {}
 clustering_stats = {}
 
 def load_data():
-    global current_data, model_metrics, feature_importance, clustering_stats
+    global current_data, model_metrics, clustering_stats
     # Load only the final dashboard dataset
     data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'final_dashboard_dataset.csv')
     
@@ -157,16 +156,6 @@ def load_data():
                      clustering_stats['silhouette'] = 0.0
             else:
                  clustering_stats['silhouette'] = 0.0
-            
-            # Mock Feature Importance (still needed as it's not in CSV columns usually)
-            # Unless you have columns like 'feat_imp_duration', we keep this mock or look for a specific file.
-            # For now, we keep the mock but update the comment.
-            feature_importance = {
-                'risk_score': 0.35,
-                'events_count': 0.25,
-                'duration': 0.20,
-                'unique_commands': 0.20
-            }
             
             current_data = df
             
@@ -310,25 +299,53 @@ def get_risk_data():
         
         print(f"📊 Histogram created: {len(hist_labels)} bins, {sum(hist_data)} total sessions")
 
-        # SHAP Values (Mock or Real)
-        shap_values = {}
-        if not feature_importance:
-             shap_values = {
-                'risk_score': 0.35,
-                'events_count': 0.25,
-                'duration': 0.20,
-                'unique_commands': 0.20
-            }
-        else:
-             shap_values = feature_importance
+        # SHAP Values Removed as requested.
+        # Replacing with professional charts related to dataset:
+        
+        # 1. Attack Vector Analysis (Radar Chart)
+        # Normalize fields for radar chart (0-1 scale approx)
+        attack_vector = {
+            'Failed Logins': float(current_data['failed_logins'].mean()),
+            'Unique Commands': float(current_data['unique_commands'].mean()),
+            'Session Duration': float(current_data['duration'].mean()) / 60, # in minutes
+            'Event Count': float(current_data['events_count'].mean()) / 10, # Scaled down
+            'Unique Usernames': float(current_data['unique_usernames'].mean()) if 'unique_usernames' in current_data.columns else 0
+        }
+
+        # 2. Threat Archetype Distribution (Pie/Doughnut)
+        threat_archetype = {}
+        if 'threat_archetype' in current_data.columns:
+            threat_archetype = current_data['threat_archetype'].value_counts().head(5).to_dict()
+            threat_archetype = {str(k): int(v) for k, v in threat_archetype.items()}
+
+        # 3. Campaign Severity Analysis (Bar Chart)
+        campaign_analysis = {}
+        if 'campaign_severity' in current_data.columns:
+             campaign_analysis = current_data['campaign_severity'].value_counts().to_dict()
+             campaign_analysis = {str(k): int(v) for k, v in campaign_analysis.items()}
+
+        # 4. Risk Factor Breakdown (Explainability) - Stacked Bar Data
+        # Dynamic calculation based on normalized feature contributions
+        risk_factors = {
+            'High Activity': float(current_data['events_count'].mean()),
+            'Command Diversity': float(current_data['unique_commands'].mean()),
+            'Session Duration': float(current_data['duration'].mean()) / 10, # Scaled
+            'Failed Logins': float(current_data['failed_logins'].mean())
+        }
+        # Normalize to sum to 100 for percentage view
+        total_factor = sum(risk_factors.values())
+        if total_factor > 0:
+            risk_factors = {k: (v / total_factor) * 100 for k, v in risk_factors.items()}
 
         response_data = {
-            'distribution': risk_dist,
-            'time_series': time_series,
-            'top_risk_sessions': top_risk_records,
-            'feature_importance': feature_importance,
-            'shap_values': shap_values, # Add SHAP values to response
-            'metrics': model_metrics,
+                'distribution': risk_dist,
+                'time_series': time_series,
+                'top_risk_sessions': top_risk_records,
+                'risk_factors': risk_factors,
+                'attack_vector': attack_vector,
+                'threat_archetype': threat_archetype,
+                'campaign_analysis': campaign_analysis,
+                'metrics': model_metrics,
             'risk_by_cluster': risk_by_cluster,
             'risk_histogram': {
                 'labels': hist_labels,
@@ -370,8 +387,8 @@ def get_behavioral_data():
                         'duration': float(cluster_data['duration'].mean()),
                         'events_count': float(cluster_data['events_count'].mean()),
                         'risk_score': float(cluster_data['risk_score'].mean()),
-                        'velocity_score': float(cluster_data['velocity_score'].mean()) if 'velocity_score' in cluster_data.columns else 0.0,
-                        'bytes_transferred': float(cluster_data['bytes_transferred'].mean()) if 'bytes_transferred' in cluster_data.columns else 0.0,
+                        'unique_commands': float(cluster_data['unique_commands'].mean()) if 'unique_commands' in cluster_data.columns else 0.0,
+                        'failed_logins': float(cluster_data['failed_logins'].mean()) if 'failed_logins' in cluster_data.columns else 0.0,
                         'count': int(len(cluster_data))
                     }
         
@@ -381,17 +398,32 @@ def get_behavioral_data():
             anomaly_data = current_data[current_data['is_anomaly']].head(20)
             anomalies = anomaly_data.fillna('').to_dict(orient='records')
         
-        # Stability Plot
-        # Since we removed MLEngine, we return None or a placeholder
-        stability_plot = None 
+        # Stability Plot Data (Aggregated by Cluster)
+        stability_plot = {}
+        if 'cluster_stability' in current_data.columns and 'cluster' in current_data.columns:
+             # Calculate mean stability per cluster
+             stability_by_cluster = current_data.groupby('cluster')['cluster_stability'].mean().to_dict()
+             stability_plot = {
+                 'clusters': [f"Cluster {k}" for k in stability_by_cluster.keys()],
+                 'scores': [float(v) for v in stability_by_cluster.values()]
+             }
         
+        # Anomalous Behavior Distribution (New Chart)
+        anomaly_dist = {}
+        if 'is_anomaly' in current_data.columns and 'attacker_type' in current_data.columns:
+            anomalous_data = current_data[current_data['is_anomaly']]
+            if not anomalous_data.empty:
+                anomaly_dist = anomalous_data['attacker_type'].value_counts().head(5).to_dict()
+                anomaly_dist = {str(k): int(v) for k, v in anomaly_dist.items()}
+
         return jsonify({
             'scatter': scatter_data,
             'duration_event_scatter': duration_event_data,
             'profiles': profiles,
             'silhouette': float(clustering_stats.get('silhouette', 0)),
             'anomalies': anomalies,
-            'stability_plot': stability_plot
+            'stability_plot': stability_plot,
+            'anomaly_distribution': anomaly_dist # NEW
         })
     except Exception as e:
         print(f"❌ Error in behavioral_data: {e}")

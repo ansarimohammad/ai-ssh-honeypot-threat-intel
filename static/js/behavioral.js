@@ -33,7 +33,6 @@ async function fetchBehavioralData() {
         }
 
         if (data.profiles) {
-            renderClusterProfileTable(data.profiles);
             renderBehaviorHeatmap(data.profiles);
         } else {
             console.warn('No profiles data found');
@@ -41,6 +40,10 @@ async function fetchBehavioralData() {
 
         if (data.stability_plot) {
             renderStabilityPlot(data.stability_plot);
+        }
+
+        if (data.anomaly_distribution) {
+            renderAnomalyDistributionChart(data.anomaly_distribution);
         }
         
     } catch (error) {
@@ -110,36 +113,13 @@ function renderAnomalyTable(anomalies) {
     });
 }
 
-function renderClusterProfileTable(profiles) {
-    const tbody = document.querySelector('#clusterProfileTable tbody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-    
-    Object.entries(profiles).forEach(([cluster, stats]) => {
-        const tr = document.createElement('tr');
-        // Safety checks for values
-        const duration = (stats.duration || 0).toFixed(1);
-        const events = (stats.events_count || 0).toFixed(1);
-        const bytes = (stats.bytes_transferred || 0).toFixed(0);
-        const velocity = (stats.velocity_score || 0).toFixed(2);
-        
-        tr.innerHTML = `
-            <td><span class="badge" style="background-color: hsl(${cluster * 137.5}, 70%, 50%)">Cluster ${cluster}</span></td>
-            <td>${duration}</td>
-            <td>${events}</td>
-            <td>${bytes}</td>
-            <td>${velocity}</td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
 function renderBehaviorHeatmap(profiles) {
     const ctx = document.getElementById('behaviorHeatmapChart');
     if (!ctx) return;
     
     // Normalize data for heatmap visualization (0-1 scale per feature)
-    const features = ['duration', 'events_count', 'bytes_transferred', 'velocity_score'];
+    // Updated to match available dataset columns: duration, events_count, unique_commands, failed_logins
+    const features = ['duration', 'events_count', 'unique_commands', 'failed_logins'];
     const clusters = Object.keys(profiles);
     
     // Find max per feature for normalization
@@ -197,16 +177,95 @@ function renderBehaviorHeatmap(profiles) {
     });
 }
 
-function renderStabilityPlot(base64Img) {
-    const img = document.getElementById('stabilityPlotImg');
-    const loading = document.getElementById('stabilityLoading');
-    if (!img) return;
+function renderStabilityPlot(data) {
+    const ctx = document.getElementById('stabilityChart');
+    if (!ctx) return;
     
-    if (base64Img) {
-        img.src = `data:image/png;base64,${base64Img}`;
-        img.style.display = 'block';
-        if(loading) loading.style.display = 'none';
-    } else {
-        if(loading) loading.innerText = 'No stability data available.';
-    }
+    const existingChart = Chart.getChart(ctx);
+    if (existingChart) existingChart.destroy();
+
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.clusters,
+            datasets: [{
+                label: 'Stability Score',
+                data: data.scores,
+                backgroundColor: data.scores.map(s => 
+                    s > 0.8 ? 'rgba(75, 192, 192, 0.7)' : // High stability (Green)
+                    s > 0.5 ? 'rgba(255, 205, 86, 0.7)' : // Medium (Yellow)
+                    'rgba(255, 99, 132, 0.7)'             // Low (Red)
+                ),
+                borderColor: data.scores.map(s => 
+                    s > 0.8 ? 'rgb(75, 192, 192)' : 
+                    s > 0.5 ? 'rgb(255, 205, 86)' : 
+                    'rgb(255, 99, 132)'
+                ),
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { 
+                    beginAtZero: true, 
+                    max: 1.0,
+                    grid: { color: '#333' },
+                    title: { display: true, text: 'Stability Score (0-1)' }
+                },
+                x: { 
+                    grid: { display: false },
+                    title: { display: true, text: 'Behavioral Clusters' }
+                }
+            },
+            plugins: { 
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `Stability: ${context.raw.toFixed(3)}`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function renderAnomalyDistributionChart(data) {
+    const ctx = document.getElementById('anomalyDistributionChart');
+    if (!ctx) return;
+    
+    const existingChart = Chart.getChart(ctx);
+    if (existingChart) existingChart.destroy();
+
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(data),
+            datasets: [{
+                data: Object.values(data),
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.7)',
+                    'rgba(54, 162, 235, 0.7)',
+                    'rgba(255, 206, 86, 0.7)',
+                    'rgba(75, 192, 192, 0.7)',
+                    'rgba(153, 102, 255, 0.7)'
+                ],
+                borderColor: '#121212',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: { color: '#e0e0e0', font: { size: 11 } }
+                }
+            }
+        }
+    });
 }
