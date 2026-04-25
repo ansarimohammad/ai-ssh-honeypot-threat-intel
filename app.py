@@ -131,20 +131,42 @@ def load_data():
             if 'bytes_transferred' not in df.columns:
                 df['bytes_transferred'] = 0
             
-            # Extract ML Metrics from the dataset (using the first row as they are constant per run usually, or mean)
-            if 'ml_accuracy' in df.columns:
-                model_metrics = {
-                    'accuracy': float(df['ml_accuracy'].mean()),
-                    'precision': float(df['ml_precision'].mean()) if 'ml_precision' in df.columns else 0.0,
-                    'recall': float(df['ml_recall'].mean()) if 'ml_recall' in df.columns else 0.0,
-                    # 'f1_score': float(df['ml_f1'].mean()) if 'ml_f1' in df.columns else 0.0 
-                }
-            else:
-                 model_metrics = {
-                    'accuracy': 0.0,
-                    'precision': 0.0,
-                    'recall': 0.0
-                }
+            # ── Load ML Metrics from dedicated JSON file ──────────────────────
+            # Previously metrics were stored as repeated columns (one constant
+            # value per row) and averaged here. That always produced the same
+            # artificially-high number (e.g. 0.99 / 0.98) regardless of actual
+            # model performance.  The pipeline now writes ml_metrics.json with
+            # the real held-out test results; we read that file preferentially.
+            metrics_path = os.path.join(app.config['UPLOAD_FOLDER'], 'ml_metrics.json')
+            loaded_from_json = False
+
+            if os.path.exists(metrics_path):
+                try:
+                    import json as _json
+                    with open(metrics_path) as _mf:
+                        _m = _json.load(_mf)
+                    model_metrics = {
+                        'accuracy':  float(_m.get('accuracy',  0.0)),
+                        'precision': float(_m.get('precision', 0.0)),
+                        'recall':    float(_m.get('recall',    0.0)),
+                    }
+                    loaded_from_json = True
+                    print(f"✓ ML metrics loaded from {metrics_path}: {model_metrics}")
+                except Exception as _e:
+                    print(f"⚠️ Could not read ml_metrics.json: {_e}")
+
+            if not loaded_from_json:
+                # Fallback: use first row (not mean) — metrics are constants per batch
+                if 'ml_accuracy' in df.columns:
+                    model_metrics = {
+                        'accuracy':  float(df['ml_accuracy'].iloc[0]),
+                        'precision': float(df['ml_precision'].iloc[0]) if 'ml_precision' in df.columns else 0.0,
+                        'recall':    float(df['ml_recall'].iloc[0])    if 'ml_recall'    in df.columns else 0.0,
+                    }
+                    print(f"⚠️ ml_metrics.json not found — using CSV column values: {model_metrics}")
+                else:
+                    model_metrics = {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0}
+                    print("⚠️ No ML metrics available")
 
             # Extract Clustering Stability
             if 'cluster_stability' in df.columns:

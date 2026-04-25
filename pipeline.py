@@ -734,11 +734,20 @@ def ml_step1_prepare_features(summary_df):
 
 
 def ml_step2_train_model(scaled_df, y):
-    """ML Step 2: Train RandomForest on provided labels, save model to disk"""
+    """ML Step 2: Train RandomForest on provided labels, save model to disk.
+
+    class_weight='balanced' compensates for the heavy class imbalance
+    (~5% anomalies) so the model genuinely learns to detect minority-class
+    sessions instead of trivially predicting 'normal' for everything.
+    Without this, accuracy is artificially inflated (95-100%) because the
+    model just predicts the majority class, and precision/recall are
+    meaningless.
+    """
     log("  [ML Step 2] Training Random Forest anomaly model...")
     Xtr, Xte, ytr, yte = train_test_split(scaled_df, y, test_size=0.3, random_state=42)
     model = RandomForestClassifier(
         n_estimators=100, random_state=42,
+        class_weight='balanced',  # FIX: handle imbalanced anomaly labels
         n_jobs=1,
     )
     model.fit(Xtr, ytr)
@@ -750,15 +759,41 @@ def ml_step2_train_model(scaled_df, y):
 
 
 def ml_step3_evaluate_model(model, Xte, yte):
-    """ML Step 3: Calculate accuracy, precision, recall on held-out test set"""
+    """ML Step 3: Calculate accuracy, precision, recall on held-out test set.
+
+    Metrics are computed on the test split (30% of data) which the model
+    never saw during training, so they reflect genuine generalisation.
+
+    Precision and recall use average='binary' (default) with pos_label=1
+    (anomaly).  With class_weight='balanced' in the classifier, these now
+    reflect real detection performance rather than trivially-high scores
+    from always predicting the majority class.
+    """
     log("  [ML Step 3] Evaluating model performance on held-out test set...")
     y_pred = model.predict(Xte)
     metrics = {
-        'accuracy':  round(accuracy_score(yte, y_pred), 4),
-        'precision': round(precision_score(yte, y_pred, zero_division=0), 4),
-        'recall':    round(recall_score(yte, y_pred, zero_division=0), 4)
+        'accuracy':  round(float(accuracy_score(yte, y_pred)), 4),
+        'precision': round(float(precision_score(yte, y_pred, zero_division=0)), 4),
+        'recall':    round(float(recall_score(yte, y_pred, zero_division=0)), 4),
+        'test_size': int(len(yte)),
+        'anomaly_rate': round(float(yte.mean()), 4),
     }
     log(f"  [ML Step 3] Acc={metrics['accuracy']} | Prec={metrics['precision']} | Rec={metrics['recall']}")
+    log(f"  [ML Step 3] Test set: {metrics['test_size']} samples | Anomaly rate: {metrics['anomaly_rate']:.1%}")
+
+    # ── Persist metrics to JSON so app.py reads the real values ──────────────
+    # Storing metrics as repeated CSV columns (one per row) means app.py gets
+    # the *mean of constants* — always 0.99, 0.98, etc. — no matter what the
+    # model actually achieved.  Writing a separate file breaks that dependency.
+    metrics_path = Path(PROJECT_DIR) / "ml_metrics.json"
+    try:
+        Path(PROJECT_DIR).mkdir(parents=True, exist_ok=True)
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        log(f"  [ML Step 3] Metrics saved → {metrics_path}")
+    except Exception as e:
+        log(f"  [ML Step 3] WARNING: Could not save metrics file: {e}")
+
     return metrics
 
 
