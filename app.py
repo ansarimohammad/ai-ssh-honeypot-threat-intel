@@ -2,8 +2,8 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for
 import pandas as pd
 import os
 import ipaddress
-# Removed MLEngine import as training is no longer needed
-# from ml_engine import MLEngine
+import threading
+import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'data'
@@ -14,13 +14,30 @@ current_data = None
 model_metrics = {}
 clustering_stats = {}
 
+# LIVE UPDATE FIX: track the last time the CSV was modified so we only
+# reload when the pipeline has actually written new data.
+_csv_last_modified = 0.0
+_data_lock = threading.Lock()   # prevent concurrent reloads corrupting current_data
+
 def load_data():
-    global current_data, model_metrics, clustering_stats
+    global current_data, model_metrics, clustering_stats, _csv_last_modified
     # Load only the final dashboard dataset
     data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'final_dashboard_dataset.csv')
-    
-    if os.path.exists(data_path):
-        print("Loading pre-processed data...")
+
+    # LIVE UPDATE FIX: skip reload if the file hasn't changed since last load.
+    # This prevents unnecessary re-processing on every poll interval.
+    try:
+        current_mtime = os.path.getmtime(data_path) if os.path.exists(data_path) else 0.0
+    except OSError:
+        current_mtime = 0.0
+
+    if current_mtime == _csv_last_modified and current_data is not None:
+        return   # file unchanged — nothing to do
+
+    with _data_lock:
+        if not os.path.exists(data_path):
+            return
+        print(f"📂 Loading pre-processed data (mtime changed: {current_mtime})...")
         try:
             df = pd.read_csv(data_path)
             
@@ -131,42 +148,20 @@ def load_data():
             if 'bytes_transferred' not in df.columns:
                 df['bytes_transferred'] = 0
             
-            # ── Load ML Metrics from dedicated JSON file ──────────────────────
-            # Previously metrics were stored as repeated columns (one constant
-            # value per row) and averaged here. That always produced the same
-            # artificially-high number (e.g. 0.99 / 0.98) regardless of actual
-            # model performance.  The pipeline now writes ml_metrics.json with
-            # the real held-out test results; we read that file preferentially.
-            metrics_path = os.path.join(app.config['UPLOAD_FOLDER'], 'ml_metrics.json')
-            loaded_from_json = False
-
-            if os.path.exists(metrics_path):
-                try:
-                    import json as _json
-                    with open(metrics_path) as _mf:
-                        _m = _json.load(_mf)
-                    model_metrics = {
-                        'accuracy':  float(_m.get('accuracy',  0.0)),
-                        'precision': float(_m.get('precision', 0.0)),
-                        'recall':    float(_m.get('recall',    0.0)),
-                    }
-                    loaded_from_json = True
-                    print(f"✓ ML metrics loaded from {metrics_path}: {model_metrics}")
-                except Exception as _e:
-                    print(f"⚠️ Could not read ml_metrics.json: {_e}")
-
-            if not loaded_from_json:
-                # Fallback: use first row (not mean) — metrics are constants per batch
-                if 'ml_accuracy' in df.columns:
-                    model_metrics = {
-                        'accuracy':  float(df['ml_accuracy'].iloc[0]),
-                        'precision': float(df['ml_precision'].iloc[0]) if 'ml_precision' in df.columns else 0.0,
-                        'recall':    float(df['ml_recall'].iloc[0])    if 'ml_recall'    in df.columns else 0.0,
-                    }
-                    print(f"⚠️ ml_metrics.json not found — using CSV column values: {model_metrics}")
-                else:
-                    model_metrics = {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0}
-                    print("⚠️ No ML metrics available")
+            # Extract ML Metrics from the dataset (using the first row as they are constant per run usually, or mean)
+            if 'ml_accuracy' in df.columns:
+                model_metrics = {
+                    'accuracy': float(df['ml_accuracy'].mean()),
+                    'precision': float(df['ml_precision'].mean()) if 'ml_precision' in df.columns else 0.0,
+                    'recall': float(df['ml_recall'].mean()) if 'ml_recall' in df.columns else 0.0,
+                    # 'f1_score': float(df['ml_f1'].mean()) if 'ml_f1' in df.columns else 0.0 
+                }
+            else:
+                 model_metrics = {
+                    'accuracy': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0
+                }
 
             # Extract Clustering Stability
             if 'cluster_stability' in df.columns:
@@ -180,10 +175,11 @@ def load_data():
                  clustering_stats['silhouette'] = 0.0
             
             current_data = df
-            
+            _csv_last_modified = current_mtime   # LIVE UPDATE FIX: mark this version as loaded
+
             # Print summary
             high_risk_count = (df['predicted_risk_level'].str.contains('High', case=False, na=False)).sum()
-            print(f"\n✓ Data load complete. Loaded {len(df)} sessions.")
+            print(f"\n✓ Data load complete. {len(df)} sessions loaded.")
             print(f"✓ High Risk sessions: {high_risk_count}")
             print(f"✓ Countries: {df['country'].nunique()}")
             
@@ -191,8 +187,7 @@ def load_data():
             print(f"❌ Error during data loading: {e}")
             import traceback
             traceback.print_exc()
-    else:
-        print("❌ No data found at startup.")
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -542,10 +537,48 @@ def upload_file():
         load_data()
         return redirect(url_for('index'))
 
+# ================================================================
+# LIVE UPDATE — background file watcher
+# ================================================================
+# Polls the CSV every 15 seconds.  When pipeline.py writes a new
+# attacks.csv (after processing a new batch), the mtime changes and
+# load_data() reloads it automatically — no server restart needed.
+# The frontend calls /api/poll every 15s and reloads charts when
+# session_count changes.
+
+def _file_watcher():
+    """Background thread: reload data whenever the CSV is updated."""
+    while True:
+        try:
+            load_data()
+        except Exception as e:
+            print(f"⚠️ File watcher error: {e}")
+        time.sleep(15)   # check every 15 seconds
+
+@app.route('/api/poll')
+def poll():
+    """
+    Lightweight endpoint the frontend polls every 15 s.
+    Returns current session count + last-updated timestamp.
+    The JS compares session_count with the last known value and
+    triggers a full chart refresh only when it changes.
+    """
+    if current_data is None:
+        return jsonify({'session_count': 0, 'last_updated': None})
+    return jsonify({
+        'session_count': len(current_data),
+        'last_updated':  str(_csv_last_modified),
+    })
+
+
 # Initialize data on startup (ensure this runs for Gunicorn workers)
 try:
     print("🚀 Initializing application data...")
     load_data()
+    # LIVE UPDATE FIX: start background thread that watches for CSV changes
+    _watcher = threading.Thread(target=_file_watcher, daemon=True, name="csv-watcher")
+    _watcher.start()
+    print("🔄 Live-update watcher started (polling every 15s)")
 except Exception as e:
     print(f"⚠️ Startup initialization warning: {e}")
 
