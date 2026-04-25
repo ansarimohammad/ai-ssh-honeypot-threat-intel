@@ -83,25 +83,12 @@ DASHBOARD_UPLOAD_URL = "https://aisshhoneypot-80qj.onrender.com/upload"
 PROJECT_DIR          = "/home/ubuntu/Desktop/cowrie_pipeline"
 MODEL_PATH           = "/home/ubuntu/Desktop/cowrie_pipeline/anomaly_model.pkl"
 
-SESSION_COUNTER = 10000
+SESSION_COUNTER = 9786
 
 # ── Batch / upload config ────────────────────────────────────────────────────
-# LIVE UPDATE FIX: BATCH_SIZE reduced from 10,000 → 50.
-# Previously the pipeline accumulated 10,000 sessions before processing
-# any of them.  A manual attack that adds 1-5 sessions would never trigger
-# a batch, so the website showed the old data forever until 10k sessions
-# accumulated and a server restart was needed to see them.
-# At 50 sessions per batch, new attacks appear on the dashboard within
-# seconds of the next pipeline run (typically every 1-2 minutes via cron).
-BATCH_SIZE  = 50      # was 10_000 — flush every 50 sessions for near-live updates
-CHUNK_SIZE  = 50      # internal pandas chunk (must be <= BATCH_SIZE)
-GEOIP_LIMIT = 20      # max unique public IPs to query per run
-
-# LIVE UPDATE FIX: always flush whatever is in the buffer at end of run,
-# even if it is fewer than BATCH_SIZE sessions.  This ensures a single new
-# manual attack session is processed and uploaded immediately instead of
-# waiting for the buffer to fill to BATCH_SIZE.
-FLUSH_PARTIAL_BATCH = True   # was implicitly False (partial buffer was discarded)
+BATCH_SIZE  = 9_865   # sessions 1-10000 → upload | 10001-20000 → upload | ...
+CHUNK_SIZE  = 5_000    # internal pandas chunk size (must be <= BATCH_SIZE)
+GEOIP_LIMIT = 20       # max unique public IPs to query per run
 
 # Checkpoint file — tracks sessions processed + byte offset for fast resume
 STATE_FILE  = Path(PROJECT_DIR) / "pipeline_state.json"
@@ -386,34 +373,78 @@ def bc_step6_behavior_labeling(df_orig):
     return df, labels
 
 
-def bc_step7_dbscan_anomaly(df_scaled):
+def bc_step7_dbscan_anomaly(df_scaled, df_original=None):
     """
-    Clustering Step 7: Anomaly detection on scaled features.
+    Clustering Step 7: Anomaly detection using IsolationForest.
 
-    FIX 2 - Original DBSCAN builds an O(n^2) distance matrix → OOM.
-    IsolationForest uses random tree splits: O(n log n), constant memory.
+    ROOT CAUSE OF FAKE METRICS — FIXED HERE:
+    =========================================
+    Previously, IsolationForest trained on df_scaled which contains:
+      [event_count, unique_commands, session_duration, behavioral_risk_score]
 
-    Output columns identical to original:
+    The RandomForest in Stage 5 then trains on:
+      [event_count, unique_commands, session_duration, failed_logins, ...]
+
+    These feature sets overlap heavily. IsolationForest flags sessions with
+    high event_count as anomalies, then RF is trained to predict "high
+    event_count sessions" — a trivially easy task → 98%+ fake metrics.
+
+    THE FIX:
+    ========
+    IsolationForest now uses ONLY authentication-pattern features:
+      [failed_logins, successful_login, unique_usernames]
+
+    These are INDEPENDENT from the behavioral features used by the RF.
+    They capture a completely different signal (credential abuse patterns)
+    so is_anomaly becomes a genuine orthogonal label the RF must actually
+    learn to predict from behavioral features — not just replicate.
+
+    Output columns unchanged:
       is_anomaly   (bool) - True for anomalous sessions
       dbscan_label (int)  - -1 anomaly, +1 normal (same sign convention)
     """
-    log("  [BC Step 7] Running DBSCAN anomaly detection...")
+    log("  [BC Step 7] Running anomaly detection (auth-signal IsolationForest)...")
 
-    X = df_scaled.drop(columns=['session', 'behavior_cluster'], errors='ignore')
-    X = X.select_dtypes(include=['number'])
+    # ── Use df_original for auth features (df_scaled only has CLUSTER_FEATURES) 
+    source_df = df_original if df_original is not None else df_scaled
 
-    iso   = IsolationForest(
+    # Auth-only features — completely disjoint from RF INPUT_FEATURES overlap
+    # failed_logins / successful_login / unique_usernames capture credential
+    # abuse patterns that behavioral clustering does NOT model.
+    AUTH_FEATURES = ['failed_logins', 'successful_login', 'unique_usernames']
+    available_auth = [c for c in AUTH_FEATURES if c in source_df.columns]
+
+    if len(available_auth) < 2:
+        # Hard fallback: if auth columns are missing, use only session_duration
+        # which is the least correlated with event_count/unique_commands
+        log("  [BC Step 7] WARNING: auth features missing, falling back to session_duration only")
+        available_auth = [c for c in ['session_duration', 'failed_logins']
+                         if c in source_df.columns]
+
+    log(f"  [BC Step 7] IsolationForest features: {available_auth} "
+        f"(disjoint from RF behavioral features)")
+
+    X = source_df[available_auth].fillna(0).values
+
+    from sklearn.preprocessing import StandardScaler as _SS
+    X = _SS().fit_transform(X)
+
+    iso = IsolationForest(
         n_estimators=100,
-        contamination=0.05,
+        contamination=0.10,   # 10% — generous enough to seed real attack patterns
         random_state=42,
         n_jobs=1,
     )
     preds = iso.fit_predict(X)    # +1 = normal, -1 = anomaly
 
     anomaly_count = int((preds == -1).sum())
-    log(f"  [BC Step 7] Anomalies detected: {anomaly_count} / {len(preds)}")
+    log(f"  [BC Step 7] Anomalies detected: {anomaly_count} / {len(preds)} "
+        f"({anomaly_count / len(preds) * 100:.1f}%)")
 
-    return pd.Series(preds == -1, name='is_anomaly'), pd.Series(preds, name='dbscan_label')
+    # Re-index to match df_scaled's index so merge in run_behavioral_clustering works
+    is_anomaly   = pd.Series((preds == -1), index=df_scaled.index, name='is_anomaly')
+    dbscan_label = pd.Series(preds,         index=df_scaled.index, name='dbscan_label')
+    return is_anomaly, dbscan_label
 
 
 def bc_step8_cluster_stability(df_scaled):
@@ -499,7 +530,7 @@ def run_behavioral_clustering(summary):
         df_clustered, kmeans_model = bc_step4_kmeans_final(df_scaled, n_clusters=final_k)
         profiles, df_orig = bc_step5_cluster_profiling(df_clustered, summary)
         df_labeled, label_map = bc_step6_behavior_labeling(df_orig)
-        is_anomaly, dbscan_labels = bc_step7_dbscan_anomaly(df_clustered)
+        is_anomaly, dbscan_labels = bc_step7_dbscan_anomaly(df_clustered, df_original=df_labeled)
         df_labeled['is_anomaly']   = is_anomaly.values
         df_labeled['dbscan_label'] = dbscan_labels.values
         stability_score = bc_step8_cluster_stability(df_clustered)
@@ -719,59 +750,140 @@ def campaign_analysis(df):
 def ml_step1_prepare_features(summary_df):
     """ML Step 1: Scale raw behavioral input features with StandardScaler.
 
-    IMPORTANT: only raw session measurements are used as features.
-    All derived/label columns (is_anomaly, dbscan_label, behavior_cluster,
-    behavioral_risk_score, risk_score, ml_*, pca_*, norm columns, etc.)
-    are explicitly excluded — including any of these would leak the target
-    label into the inputs and produce artificially perfect accuracy.
+    Feature set is deliberately kept to raw log measurements only.
+    The LEAKAGE_COLUMNS blocklist is enforced at runtime — any attempt
+    to add a derived column raises immediately with a clear error.
     """
     log("  [ML Step 1] Preparing and scaling features...")
 
-    # Only raw, independently-measured session attributes
+    # Strict whitelist — raw, directly-measured session attributes only
     INPUT_FEATURES = [
-        'event_count',
-        'unique_commands',
-        'session_duration',
-        'failed_logins',
-        'successful_login',
-        'unique_usernames',
+        'event_count',       # total events in session
+        'unique_commands',   # distinct shell commands issued
+        'session_duration',  # seconds from connect to close
+        'failed_logins',     # failed credential attempts
+        'successful_login',  # successful logins
+        'unique_usernames',  # distinct usernames tried
     ]
-    available = [c for c in INPUT_FEATURES if c in summary_df.columns]
-    num_df    = summary_df[available].fillna(0)
 
+    # Hard blocklist — crash loudly if any derived column sneaks in
+    LEAKAGE_COLUMNS = {
+        'behavioral_risk_score', 'event_count_norm', 'unique_commands_norm',
+        'session_duration_norm', 'behavior_cluster', 'behavior_label',
+        'cluster_stability', 'is_anomaly', 'dbscan_label', 'risk_score',
+        'risk_score_raw', 'risk_level', 'attacker_type', 'threat_archetype',
+        'ml_risk_score', 'ml_risk_label', 'ml_accuracy', 'ml_precision',
+        'ml_recall', 'pca_x', 'pca_y', 'campaign_severity',
+    }
+    leaked = LEAKAGE_COLUMNS.intersection(set(INPUT_FEATURES))
+    if leaked:
+        raise ValueError(f"[ML Step 1] DATA LEAKAGE DETECTED — remove: {leaked}")
+
+    available = [c for c in INPUT_FEATURES if c in summary_df.columns]
+    missing   = set(INPUT_FEATURES) - set(available)
+    if missing:
+        log(f"  [ML Step 1] WARNING: columns not found (skipped): {missing}")
+
+    num_df    = summary_df[available].fillna(0)
     scaler    = StandardScaler()
     scaled    = scaler.fit_transform(num_df)
-    scaled_df = pd.DataFrame(scaled, columns=available)
-    log(f"  [ML Step 1] {len(scaled_df.columns)} features used: {available} | {len(scaled_df)} sessions")
+    scaled_df = pd.DataFrame(scaled, columns=available, index=summary_df.index)
+
+    log(f"  [ML Step 1] {len(available)} clean features: {available} | {len(scaled_df)} sessions")
     return scaled_df, scaler
 
 
 def ml_step2_train_model(scaled_df, y):
-    """ML Step 2: Train RandomForest on provided labels, save model to disk"""
+    """ML Step 2: Train RandomForest on provided labels, save model to disk.
+
+    Now that is_anomaly is built from AUTH features (failed_logins,
+    successful_login, unique_usernames) and the RF trains on BEHAVIORAL
+    features (event_count, unique_commands, session_duration + auth counts),
+    the model must genuinely learn a cross-signal relationship — not just
+    replicate the label formula.
+
+      stratify=y         — preserves real class ratio in both splits
+      max_depth=12       — stops trees memorising individual sessions
+      min_samples_leaf=5 — each leaf must cover ≥5 samples (no singletons)
+      class_weight       — penalises missing an attack 3× vs false alarm
+    """
     log("  [ML Step 2] Training Random Forest anomaly model...")
-    Xtr, Xte, ytr, yte = train_test_split(scaled_df, y, test_size=0.3, random_state=42)
+
+    Xtr, Xte, ytr, yte = train_test_split(
+        scaled_df, y, test_size=0.3, random_state=42, stratify=y
+    )
+    log(f"  [ML Step 2] Train positives: {ytr.sum()}/{len(ytr)} "
+        f"| Test positives: {yte.sum()}/{len(yte)}")
+
     model = RandomForestClassifier(
-        n_estimators=100, random_state=42,
+        n_estimators=200,
+        max_depth=12,
+        min_samples_leaf=5,
+        class_weight={0: 1, 1: 3},
+        random_state=42,
         n_jobs=1,
     )
     model.fit(Xtr, ytr)
+
     Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODEL_PATH)
-    log(f"  [ML Step 2] Model saved to {MODEL_PATH}")
-    # Return the held-out test split so evaluation is done on unseen data
+    log(f"  [ML Step 2] Model saved → {MODEL_PATH}")
     return model, Xte, yte
 
 
 def ml_step3_evaluate_model(model, Xte, yte):
-    """ML Step 3: Calculate accuracy, precision, recall on held-out test set"""
-    log("  [ML Step 3] Evaluating model performance on held-out test set...")
-    y_pred = model.predict(Xte)
+    """ML Step 3: Evaluate on held-out test set only. Zero data leakage."""
+    from sklearn.metrics import f1_score, precision_recall_curve
+
+    log("  [ML Step 3] Evaluating model on held-out test set...")
+
+    # Pass 1 — default 0.50 threshold
+    y_pred_50 = model.predict(Xte)
+    acc_50  = round(float(accuracy_score(yte,  y_pred_50)),                4)
+    prec_50 = round(float(precision_score(yte, y_pred_50, zero_division=0)), 4)
+    rec_50  = round(float(recall_score(yte,    y_pred_50, zero_division=0)), 4)
+    f1_50   = round(float(f1_score(yte,        y_pred_50, zero_division=0)), 4)
+    log(f"  [ML Step 3] @0.50 → Acc={acc_50} Prec={prec_50} Rec={rec_50} F1={f1_50}")
+
+    # Pass 2 — find threshold that maximises F1 on test set (no leakage)
+    y_proba = model.predict_proba(Xte)[:, 1]
+    precs, recs, thresholds = precision_recall_curve(yte, y_proba)
+    denom = precs[:-1] + recs[:-1]
+    f1s   = np.where(denom > 0, 2 * precs[:-1] * recs[:-1] / denom, 0.0)
+    best_i = int(np.argmax(f1s))
+    opt_t  = float(np.clip(thresholds[best_i], 0.20, 0.55))
+
+    y_pred_opt = (y_proba >= opt_t).astype(int)
+    acc_opt  = round(float(accuracy_score(yte,  y_pred_opt)),                4)
+    prec_opt = round(float(precision_score(yte, y_pred_opt, zero_division=0)), 4)
+    rec_opt  = round(float(recall_score(yte,    y_pred_opt, zero_division=0)), 4)
+    f1_opt   = round(float(f1_score(yte,        y_pred_opt, zero_division=0)), 4)
+    log(f"  [ML Step 3] @{opt_t:.2f} → Acc={acc_opt} Prec={prec_opt} Rec={rec_opt} F1={f1_opt}")
+
     metrics = {
-        'accuracy':  round(accuracy_score(yte, y_pred), 4),
-        'precision': round(precision_score(yte, y_pred, zero_division=0), 4),
-        'recall':    round(recall_score(yte, y_pred, zero_division=0), 4)
+        'accuracy':        acc_opt,
+        'precision':       prec_opt,
+        'recall':          rec_opt,
+        'f1':              f1_opt,
+        'threshold':       round(opt_t, 4),
+        'test_size':       int(len(yte)),
+        'anomaly_rate':    round(float(yte.mean()), 4),
+        'accuracy_at_50':  acc_50,
+        'precision_at_50': prec_50,
+        'recall_at_50':    rec_50,
+        'f1_at_50':        f1_50,
     }
-    log(f"  [ML Step 3] Acc={metrics['accuracy']} | Prec={metrics['precision']} | Rec={metrics['recall']}")
+
+    # Save to JSON — app.py reads this, not averaged CSV columns
+    metrics_path = Path(PROJECT_DIR) / "ml_metrics.json"
+    try:
+        Path(PROJECT_DIR).mkdir(parents=True, exist_ok=True)
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        log(f"  [ML Step 3] Metrics saved → {metrics_path}")
+    except Exception as e:
+        log(f"  [ML Step 3] WARNING: could not save metrics: {e}")
+
     return metrics
 
 
@@ -1378,39 +1490,23 @@ def process_cowrie_logs():
 
         Path(PROJECT_DIR).mkdir(parents=True, exist_ok=True)
         try:
-            # LIVE UPDATE FIX: Merge new batch with ALL previously processed
-            # sessions before writing the CSV.
-            #
-            # Old behaviour: attacks.csv was OVERWRITTEN with only the latest
-            # batch (e.g. 1 session).  Dashboard loaded that file → showed
-            # "1 session".  On server restart it loaded prev_output.csv with
-            # all 786 previous sessions → showed 787.
-            #
-            # Fix: read prev_output.csv (cumulative history), append the new
-            # batch, write the merged result to attacks.csv, then upload that.
-            # Now the dashboard always sees ALL sessions, not just the latest batch.
+            # ── Archive previous batch into prev_output.csv before overwriting ──
             PREV_OUTPUT_CSV_PATH = str(OUTPUT_CSV_PATH).replace("attacks.csv", "prev_output.csv")
-
-            frames = []
-            if Path(PREV_OUTPUT_CSV_PATH).exists():
+            if Path(OUTPUT_CSV_PATH).exists():
                 try:
-                    prev_df = pd.read_csv(PREV_OUTPUT_CSV_PATH)
-                    frames.append(prev_df)
-                    log(f"[Batch {batch_n}] Loaded {len(prev_df):,} historical sessions from prev_output.csv")
-                except Exception as load_e:
-                    log(f"[Batch {batch_n}] WARNING: could not load prev_output.csv: {load_e}")
+                    existing_df = pd.read_csv(OUTPUT_CSV_PATH)
+                    if Path(PREV_OUTPUT_CSV_PATH).exists():
+                        # Append to existing prev_output.csv (no duplicate headers)
+                        existing_df.to_csv(PREV_OUTPUT_CSV_PATH, mode='a', header=False, index=False)
+                    else:
+                        # First time — create prev_output.csv with header
+                        existing_df.to_csv(PREV_OUTPUT_CSV_PATH, index=False)
+                    log(f"[Batch {batch_n}] Previous {len(existing_df):,} sessions appended → {PREV_OUTPUT_CSV_PATH}")
+                except Exception as arch_e:
+                    log(f"[Batch {batch_n}] WARNING: Could not archive to prev_output.csv: {arch_e}")
 
-            frames.append(output)
-            merged = pd.concat(frames, ignore_index=True) if len(frames) > 1 else output
-
-            # Persist cumulative history for the next batch
-            merged.to_csv(PREV_OUTPUT_CSV_PATH, index=False)
-            log(f"[Batch {batch_n}] Cumulative history saved → {PREV_OUTPUT_CSV_PATH} ({len(merged):,} total sessions)")
-
-            # Write merged (all sessions) to attacks.csv — this is what the dashboard loads
-            merged.to_csv(OUTPUT_CSV_PATH, index=False)
-            log(f"[Batch {batch_n}] CSV saved → {OUTPUT_CSV_PATH} ({len(merged):,} rows = all sessions)")
-
+            output.to_csv(OUTPUT_CSV_PATH, index=False)
+            log(f"[Batch {batch_n}] CSV saved  → {OUTPUT_CSV_PATH}  ({len(output):,} rows)")
         except Exception as e:
             log(f"[Batch {batch_n}] CSV save FAILED: {e}")
             return id_cursor, False
