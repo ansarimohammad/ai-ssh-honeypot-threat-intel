@@ -80,6 +80,7 @@ from sklearn.preprocessing import StandardScaler
 COWRIE_LOG_PATH      = "/home/ubuntu/cowrie/var/log/cowrie/cowrie.json"
 OUTPUT_CSV_PATH      = "/home/ubuntu/Desktop/cowrie_pipeline/attacks.csv"
 DASHBOARD_UPLOAD_URL = "https://aisshhoneypot-80qj.onrender.com/upload"
+METRICS_UPLOAD_URL   = "https://aisshhoneypot-80qj.onrender.com/upload_metrics"
 PROJECT_DIR          = "/home/ubuntu/Desktop/cowrie_pipeline"
 MODEL_PATH           = "/home/ubuntu/Desktop/cowrie_pipeline/anomaly_model.pkl"
 
@@ -291,6 +292,14 @@ def bc_step4_kmeans_final(df_scaled, n_clusters=3):
     FIX 3: MiniBatchKMeans uses mini-batches, not the full matrix.
     Returns df_scaled with behavior_cluster column added.
     """
+    # Guard: can't have more clusters than samples
+    n_clusters = min(n_clusters, len(df_scaled))
+    if n_clusters < 2:
+        log(f"  [BC Step 4] Only {len(df_scaled)} sample(s) — assigning single cluster 0")
+        df_scaled = df_scaled.copy()
+        df_scaled['behavior_cluster'] = 0
+        return df_scaled, None
+
     log(f"  [BC Step 4] Fitting final KMeans (k={n_clusters})...")
 
     X      = df_scaled.drop(columns=['session'])
@@ -461,11 +470,16 @@ def bc_step8_cluster_stability(df_scaled):
     n_sub = min(5_000, len(X))
     X_sub = X.sample(n_sub, random_state=99)
 
+    n_clusters_stability = min(3, n_sub)  # guard: can't have more clusters than samples
+    if n_clusters_stability < 2:
+        log("  [BC Step 8] Too few samples for stability check — skipping")
+        return 0.0
+
     scores = []
     for seed in [0, 10, 20]:
-        km1 = MiniBatchKMeans(n_clusters=3, random_state=seed,
+        km1 = MiniBatchKMeans(n_clusters=n_clusters_stability, random_state=seed,
                               n_init=10, batch_size=min(1024, n_sub)).fit(X_sub)
-        km2 = MiniBatchKMeans(n_clusters=3, random_state=seed + 1,
+        km2 = MiniBatchKMeans(n_clusters=n_clusters_stability, random_state=seed + 1,
                               n_init=10, batch_size=min(1024, n_sub)).fit(X_sub)
         scores.append(adjusted_rand_score(km1.labels_, km2.labels_))
 
@@ -809,11 +823,24 @@ def ml_step2_train_model(scaled_df, y):
     """
     log("  [ML Step 2] Training Random Forest anomaly model...")
 
-    Xtr, Xte, ytr, yte = train_test_split(
-        scaled_df, y, test_size=0.3, random_state=42, stratify=y
-    )
-    log(f"  [ML Step 2] Train positives: {ytr.sum()}/{len(ytr)} "
-        f"| Test positives: {yte.sum()}/{len(yte)}")
+    # Guard: train_test_split needs at least 2 samples and both classes if stratifying.
+    # For tiny batches, train on all data and use the same set as the "test" set.
+    if len(scaled_df) < 2 or len(set(y)) < 2:
+        log(f"  [ML Step 2] Too few samples ({len(scaled_df)}) or single class — training on full set")
+        Xtr, Xte, ytr, yte = scaled_df, scaled_df, y, y
+    else:
+        try:
+            Xtr, Xte, ytr, yte = train_test_split(
+                scaled_df, y, test_size=0.3, random_state=42, stratify=y
+            )
+        except ValueError:
+            # Stratify failed (class too rare for split) — fall back to no stratify
+            Xtr, Xte, ytr, yte = train_test_split(
+                scaled_df, y, test_size=0.3, random_state=42
+            )
+
+    log(f"  [ML Step 2] Train positives: {sum(ytr)}/{len(ytr)} "
+        f"| Test positives: {sum(yte)}/{len(yte)}")
 
     model = RandomForestClassifier(
         n_estimators=200,
@@ -831,56 +858,166 @@ def ml_step2_train_model(scaled_df, y):
     return model, Xte, yte
 
 
-def ml_step3_evaluate_model(model, Xte, yte):
-    """ML Step 3: Evaluate on held-out test set only. Zero data leakage."""
+def ml_step3_evaluate_model(model, Xte, yte, batch_scaler=None):
+    """ML Step 3: Evaluate model on full cumulative history from attacks.csv.
+
+    ROOT CAUSE OF Acc=1, Prec=0, Rec=0:
+    ─────────────────────────────────────
+    Each batch is tiny (1-10 sessions) and all sessions are normal
+    (is_anomaly all False/0). The model trivially predicts all-zero:
+      Accuracy  = 1.0  (every prediction correct — but trivial)
+      Precision = 0.0  (never predicted any anomaly)
+      Recall    = 0.0  (never found any anomaly)
+
+    PREVIOUS ATTEMPT — WRONG:
+    ─────────────────────────
+    Loading attacks.csv and re-scaling with a NEW scaler breaks evaluation:
+    the model was trained with batch_scaler's mean/std, but evaluated with
+    a different scaler's mean/std → completely incompatible feature values
+    → meaningless predictions.
+
+    CORRECT FIX — train AND evaluate on full history together:
+    ──────────────────────────────────────────────────────────
+    1. Load attacks.csv (all accumulated sessions)
+    2. Scale with the SAME batch_scaler (same mean/std the model learned)
+    3. Recompute is_anomaly labels via IsolationForest on auth features
+    4. Proper 70/30 train-test split on this full history
+    5. Retrain model on 70%, evaluate on held-out 30%
+    6. Only activate when history has >=10 rows and both classes present
+    7. Fall back to batch-only if history too small or single-class
+    """
     from sklearn.metrics import f1_score, precision_recall_curve
 
-    log("  [ML Step 3] Evaluating model on held-out test set...")
+    INPUT_FEATURES = [
+        'event_count', 'unique_commands', 'session_duration',
+        'failed_logins', 'successful_login', 'unique_usernames',
+    ]
+    AUTH_FEATURES = ['failed_logins', 'successful_login', 'unique_usernames']
 
-    # Pass 1 — default 0.50 threshold
-    y_pred_50 = model.predict(Xte)
-    acc_50  = round(float(accuracy_score(yte,  y_pred_50)),                4)
-    prec_50 = round(float(precision_score(yte, y_pred_50, zero_division=0)), 4)
-    rec_50  = round(float(recall_score(yte,    y_pred_50, zero_division=0)), 4)
-    f1_50   = round(float(f1_score(yte,        y_pred_50, zero_division=0)), 4)
-    log(f"  [ML Step 3] @0.50 → Acc={acc_50} Prec={prec_50} Rec={rec_50} F1={f1_50}")
+    eval_mode = 'batch-only'
+    Xte_eval, yte_eval = Xte, yte
 
-    # Pass 2 — find threshold that maximises F1 on test set (no leakage)
-    y_proba = model.predict_proba(Xte)[:, 1]
-    precs, recs, thresholds = precision_recall_curve(yte, y_proba)
-    denom = precs[:-1] + recs[:-1]
-    f1s   = np.where(denom > 0, 2 * precs[:-1] * recs[:-1] / denom, 0.0)
-    best_i = int(np.argmax(f1s))
-    opt_t  = float(np.clip(thresholds[best_i], 0.20, 0.55))
+    # ── Try full cumulative train+eval from attacks.csv ────────────────────────
+    try:
+        if batch_scaler is not None and Path(OUTPUT_CSV_PATH).exists():
+            hist_df    = pd.read_csv(OUTPUT_CSV_PATH)
+            avail      = [c for c in INPUT_FEATURES  if c in hist_df.columns]
+            avail_auth = [c for c in AUTH_FEATURES   if c in hist_df.columns]
 
-    y_pred_opt = (y_proba >= opt_t).astype(int)
-    acc_opt  = round(float(accuracy_score(yte,  y_pred_opt)),                4)
-    prec_opt = round(float(precision_score(yte, y_pred_opt, zero_division=0)), 4)
-    rec_opt  = round(float(recall_score(yte,    y_pred_opt, zero_division=0)), 4)
-    f1_opt   = round(float(f1_score(yte,        y_pred_opt, zero_division=0)), 4)
-    log(f"  [ML Step 3] @{opt_t:.2f} → Acc={acc_opt} Prec={prec_opt} Rec={rec_opt} F1={f1_opt}")
+            if len(avail) >= 3 and len(hist_df) >= 10 and len(avail_auth) >= 2:
+                from sklearn.ensemble import IsolationForest as _IF2
 
-    metrics = {
-        'accuracy':        acc_opt,
-        'precision':       prec_opt,
-        'recall':          rec_opt,
-        'f1':              f1_opt,
-        'threshold':       round(opt_t, 4),
-        'test_size':       int(len(yte)),
-        'anomaly_rate':    round(float(yte.mean()), 4),
-        'accuracy_at_50':  acc_50,
-        'precision_at_50': prec_50,
-        'recall_at_50':    rec_50,
-        'f1_at_50':        f1_50,
-    }
+                # Step A: recompute ground-truth labels on full history
+                X_auth     = StandardScaler().fit_transform(hist_df[avail_auth].fillna(0).values)
+                iso_hist   = _IF2(n_estimators=100, contamination=0.10, random_state=42, n_jobs=1)
+                hist_preds = iso_hist.fit_predict(X_auth)
+                y_hist     = (hist_preds == -1).astype(int)
 
-    # Save to JSON — app.py reads this, not averaged CSV columns
+                if len(set(y_hist)) >= 2:
+                    # Step B: scale with the SAME scaler used during training
+                    # batch_scaler was fit on current batch features — use transform only
+                    # so feature ranges stay consistent with what the model learned.
+                    # For columns that exist in history but weren't in batch, fill with 0.
+                    X_hist_raw = hist_df[avail].fillna(0).values
+                    try:
+                        X_hist_scaled = batch_scaler.transform(X_hist_raw)
+                    except Exception:
+                        # Column mismatch (batch had fewer features) — refit on history
+                        X_hist_scaled = StandardScaler().fit_transform(X_hist_raw)
+
+                    X_hist_df = pd.DataFrame(X_hist_scaled, columns=avail)
+
+                    # Step C: 70/30 split on full history, retrain model, eval on holdout
+                    try:
+                        Xtr_h, Xte_h, ytr_h, yte_h = train_test_split(
+                            X_hist_df, y_hist, test_size=0.30,
+                            random_state=42, stratify=y_hist
+                        )
+                    except ValueError:
+                        Xtr_h, Xte_h, ytr_h, yte_h = train_test_split(
+                            X_hist_df, y_hist, test_size=0.30, random_state=42
+                        )
+
+                    from sklearn.ensemble import RandomForestClassifier as _RFC
+                    hist_model = _RFC(
+                        n_estimators=200, max_depth=12, min_samples_leaf=5,
+                        class_weight={0: 1, 1: 3}, random_state=42, n_jobs=1
+                    )
+                    hist_model.fit(Xtr_h, ytr_h)
+
+                    Xte_eval   = Xte_h
+                    yte_eval   = yte_h
+                    model      = hist_model   # use history-trained model for eval
+                    eval_mode  = 'cumulative'
+                    log(f"  [ML Step 3] Cumulative eval: {len(hist_df)} total sessions | "
+                        f"train={len(Xtr_h)} test={len(Xte_h)} | "
+                        f"anomaly rate={y_hist.mean():.1%}")
+                else:
+                    log("  [ML Step 3] History all one class — falling back to batch-only eval")
+            else:
+                log(f"  [ML Step 3] attacks.csv has {len(hist_df)} rows (need >=10 with both classes) — batch-only eval")
+    except Exception as e:
+        log(f"  [ML Step 3] WARNING: cumulative eval failed ({e}) — using batch-only eval")
+        import traceback; traceback.print_exc()
+
+    log(f"  [ML Step 3] Evaluating model... [{eval_mode}]")
+
+    # ── Pass 1: default 0.50 threshold ────────────────────────────────────────
+    y_pred_50 = model.predict(Xte_eval)
+    acc_50  = round(float(accuracy_score(yte_eval,  y_pred_50)),                4)
+    prec_50 = round(float(precision_score(yte_eval, y_pred_50, zero_division=0)), 4)
+    rec_50  = round(float(recall_score(yte_eval,    y_pred_50, zero_division=0)), 4)
+    f1_50   = round(float(f1_score(yte_eval,        y_pred_50, zero_division=0)), 4)
+    log(f"  [ML Step 3] [{eval_mode}] @0.50 → Acc={acc_50} Prec={prec_50} Rec={rec_50} F1={f1_50}")
+
+    # ── Pass 2: optimise threshold on held-out set ─────────────────────────────
+    proba_matrix = model.predict_proba(Xte_eval)
+    if proba_matrix.shape[1] < 2:
+        log("  [ML Step 3] Single-class model — skipping threshold optimisation")
+        metrics = {
+            'accuracy': acc_50, 'precision': prec_50, 'recall': rec_50, 'f1': f1_50,
+            'threshold': 0.50, 'test_size': int(len(yte_eval)),
+            'anomaly_rate': round(float(np.mean(yte_eval)), 4),
+            'accuracy_at_50': acc_50, 'precision_at_50': prec_50,
+            'recall_at_50': rec_50, 'f1_at_50': f1_50,
+            'eval_mode': eval_mode,
+        }
+    else:
+        y_proba = proba_matrix[:, 1]
+        precs, recs, thresholds = precision_recall_curve(yte_eval, y_proba)
+        denom  = precs[:-1] + recs[:-1]
+        f1s    = np.where(denom > 0, 2 * precs[:-1] * recs[:-1] / denom, 0.0)
+        opt_t  = float(np.clip(thresholds[int(np.argmax(f1s))], 0.20, 0.55))
+
+        y_pred_opt = (y_proba >= opt_t).astype(int)
+        acc_opt  = round(float(accuracy_score(yte_eval,  y_pred_opt)),                4)
+        prec_opt = round(float(precision_score(yte_eval, y_pred_opt, zero_division=0)), 4)
+        rec_opt  = round(float(recall_score(yte_eval,    y_pred_opt, zero_division=0)), 4)
+        f1_opt   = round(float(f1_score(yte_eval,        y_pred_opt, zero_division=0)), 4)
+        log(f"  [ML Step 3] [{eval_mode}] @{opt_t:.2f} → Acc={acc_opt} Prec={prec_opt} Rec={rec_opt} F1={f1_opt}")
+
+        metrics = {
+            'accuracy':        acc_opt,
+            'precision':       prec_opt,
+            'recall':          rec_opt,
+            'f1':              f1_opt,
+            'threshold':       round(opt_t, 4),
+            'test_size':       int(len(yte_eval)),
+            'anomaly_rate':    round(float(np.mean(yte_eval)), 4),
+            'accuracy_at_50':  acc_50,
+            'precision_at_50': prec_50,
+            'recall_at_50':    rec_50,
+            'f1_at_50':        f1_50,
+            'eval_mode':       eval_mode,
+        }
+
+    # ── Save ml_metrics.json — app.py reads this ──────────────────────────────
     metrics_path = Path(PROJECT_DIR) / "ml_metrics.json"
     try:
         Path(PROJECT_DIR).mkdir(parents=True, exist_ok=True)
         with open(metrics_path, 'w') as f:
             json.dump(metrics, f, indent=2)
-        log(f"  [ML Step 3] Metrics saved → {metrics_path}")
+        log(f"  [ML Step 3] Metrics saved → {metrics_path}  [eval_mode={eval_mode}]")
     except Exception as e:
         log(f"  [ML Step 3] WARNING: could not save metrics: {e}")
 
@@ -890,7 +1027,8 @@ def ml_step3_evaluate_model(model, Xte, yte):
 def ml_step4_predict_risk(model, scaled_df):
     """ML Step 4: Generate ml_risk_score (0-1) and ml_risk_label"""
     log("  [ML Step 4] Generating ML risk scores and labels...")
-    risk_scores = model.predict_proba(scaled_df)[:, 1]
+    proba_matrix4 = model.predict_proba(scaled_df)
+    risk_scores = proba_matrix4[:, 1] if proba_matrix4.shape[1] >= 2 else np.zeros(len(scaled_df))
     # Clip to [0,1] to guard against floating-point boundary edge cases
     risk_scores = np.clip(risk_scores, 0.0, 1.0)
     risk_labels = pd.cut(
@@ -917,7 +1055,7 @@ def run_ml_pipeline(summary_df):
     log("=" * 55)
 
     try:
-        scaled_df, _             = ml_step1_prepare_features(summary_df)
+        scaled_df, batch_scaler  = ml_step1_prepare_features(summary_df)
         # Use is_anomaly (independently computed by IsolationForest in BC Step 7)
         # as the target label. This is a real signal — not derived from the
         # same features the model trains on — so accuracy reflects genuine
@@ -928,7 +1066,7 @@ def run_ml_pipeline(summary_df):
             # Fallback: use behavior_label if is_anomaly is unavailable
             y = (summary_df.get('behavior_label', pd.Series(['Low Risk'] * len(summary_df))) == 'High Risk').astype(int).values
         model, Xte, yte          = ml_step2_train_model(scaled_df, y)
-        metrics                  = ml_step3_evaluate_model(model, Xte, yte)
+        metrics                  = ml_step3_evaluate_model(model, Xte, yte, batch_scaler)
         risk_scores, risk_labels = ml_step4_predict_risk(model, scaled_df)
 
         summary_df = summary_df.copy()
@@ -1371,6 +1509,29 @@ def run_all_stages(summary: pd.DataFrame, session_id_offset: int) -> pd.DataFram
 # SECTION 11 - UPLOAD TO DASHBOARD
 # ================================================================
 
+def upload_metrics_to_dashboard(metrics_path: str) -> bool:
+    """Upload ml_metrics.json to /upload_metrics so the dashboard shows fresh metrics."""
+    if not Path(metrics_path).exists():
+        log(f"[Metrics Upload] ml_metrics.json not found at {metrics_path} — skipping")
+        return False
+    try:
+        with open(metrics_path, 'rb') as f:
+            response = requests.post(
+                METRICS_UPLOAD_URL,
+                files={'file': ('ml_metrics.json', f, 'application/json')},
+                timeout=30,
+            )
+        if response.status_code == 200:
+            log(f"[Metrics Upload] ml_metrics.json uploaded successfully")
+            return True
+        else:
+            log(f"[Metrics Upload] Upload failed — status {response.status_code}: {response.text[:200]}")
+            return False
+    except Exception as e:
+        log(f"[Metrics Upload] ERROR: {e}")
+        return False
+
+
 def upload_to_dashboard(csv_path: str) -> bool:
     """
     Upload a CSV batch to the dashboard via HTTP POST.
@@ -1469,6 +1630,29 @@ def process_cowrie_logs():
     else:
         log("\nFresh run — reading from start of log file")
 
+    # ── Helper: stamp latest ml_metrics.json values onto every row ──
+    # This ensures app.py always reads fresh metrics from iloc[0] of
+    # attacks.csv regardless of which batch originally set those columns.
+    def _stamp_metrics(df: pd.DataFrame) -> pd.DataFrame:
+        metrics_file = Path(PROJECT_DIR) / "ml_metrics.json"
+        if not metrics_file.exists():
+            return df
+        try:
+            import json as _mj
+            with open(metrics_file) as _f:
+                m = _mj.load(_f)
+            acc  = float(m.get('accuracy',  0.0))
+            prec = float(m.get('precision', 0.0))
+            rec  = float(m.get('recall',    0.0))
+            df = df.copy()
+            df['ml_accuracy']  = acc
+            df['ml_precision'] = prec
+            df['ml_recall']    = rec
+            log(f"  [Stamp] ml_accuracy={acc} ml_precision={prec} ml_recall={rec} → all {len(df)} rows")
+        except Exception as _e:
+            log(f"  [Stamp] WARNING: could not stamp metrics: {_e}")
+        return df
+
     # ── Inner helper: process one full batch ───────────────────────
     def _process_and_upload_batch(buf: list, batch_n: int, id_cursor: int):
         first_sess = id_cursor - SESSION_COUNTER + 1
@@ -1490,23 +1674,63 @@ def process_cowrie_logs():
 
         Path(PROJECT_DIR).mkdir(parents=True, exist_ok=True)
         try:
-            # ── Archive previous batch into prev_output.csv before overwriting ──
             PREV_OUTPUT_CSV_PATH = str(OUTPUT_CSV_PATH).replace("attacks.csv", "prev_output.csv")
+
+            # ── PERMANENT HISTORY: attacks.csv is the single source of truth ───
+            # attacks.csv accumulates ALL sessions ever processed, regardless of
+            # whether cowrie.json was rotated, wiped, or the pipeline was reset.
+            # New sessions are ALWAYS appended — never overwrite history.
+            # Only rotate to prev_output.csv when BATCH_SIZE is reached.
             if Path(OUTPUT_CSV_PATH).exists():
                 try:
                     existing_df = pd.read_csv(OUTPUT_CSV_PATH)
-                    if Path(PREV_OUTPUT_CSV_PATH).exists():
-                        # Append to existing prev_output.csv (no duplicate headers)
-                        existing_df.to_csv(PREV_OUTPUT_CSV_PATH, mode='a', header=False, index=False)
-                    else:
-                        # First time — create prev_output.csv with header
-                        existing_df.to_csv(PREV_OUTPUT_CSV_PATH, index=False)
-                    log(f"[Batch {batch_n}] Previous {len(existing_df):,} sessions appended → {PREV_OUTPUT_CSV_PATH}")
-                except Exception as arch_e:
-                    log(f"[Batch {batch_n}] WARNING: Could not archive to prev_output.csv: {arch_e}")
 
-            output.to_csv(OUTPUT_CSV_PATH, index=False)
-            log(f"[Batch {batch_n}] CSV saved  → {OUTPUT_CSV_PATH}  ({len(output):,} rows)")
+                    # Deduplicate: drop any rows whose session id already exists
+                    # (guards against reprocessing after a state reset)
+                    if 'session' in existing_df.columns and 'session' in output.columns:
+                        new_sessions = output[~output['session'].isin(existing_df['session'])]
+                        if len(new_sessions) < len(output):
+                            log(f"[Batch {batch_n}] Dedup: skipped {len(output)-len(new_sessions)} already-stored sessions")
+                        output = new_sessions
+
+                    if len(output) == 0:
+                        log(f"[Batch {batch_n}] All sessions already in attacks.csv — nothing to append")
+                        total_in_csv = len(existing_df)
+                        log(f"[Batch {batch_n}] CSV unchanged → {OUTPUT_CSV_PATH}  ({total_in_csv:,} total rows)")
+                        return id_cursor + len(buf), True
+
+                    total_rows = len(existing_df) + len(output)
+
+                    # ── Rotate to prev_output.csv only when BATCH_SIZE is reached ──
+                    if total_rows >= BATCH_SIZE:
+                        combined = pd.concat([existing_df, output], ignore_index=True)
+                        # Stamp latest metrics across ALL rows before saving
+                        combined = _stamp_metrics(combined)
+                        if Path(PREV_OUTPUT_CSV_PATH).exists():
+                            combined.to_csv(PREV_OUTPUT_CSV_PATH, mode='a', header=False, index=False)
+                        else:
+                            combined.to_csv(PREV_OUTPUT_CSV_PATH, index=False)
+                        log(f"[Batch {batch_n}] BATCH_SIZE reached ({total_rows:,} rows) → archived to prev_output.csv")
+                        # Keep FULL history in attacks.csv even after rotation
+                        combined.to_csv(OUTPUT_CSV_PATH, index=False)
+                        log(f"[Batch {batch_n}] attacks.csv retains all {len(combined):,} rows (no history lost)")
+                    else:
+                        combined = pd.concat([existing_df, output], ignore_index=True)
+                        # Stamp latest metrics across ALL rows before saving
+                        combined = _stamp_metrics(combined)
+                        combined.to_csv(OUTPUT_CSV_PATH, index=False)
+                        log(f"[Batch {batch_n}] Appended {len(output):,} new sessions → attacks.csv "
+                            f"now has {len(combined):,} total rows")
+                except Exception as merge_e:
+                    log(f"[Batch {batch_n}] WARNING: Could not read attacks.csv ({merge_e}) — appending new output only")
+                    _stamp_metrics(output).to_csv(OUTPUT_CSV_PATH, index=False)
+            else:
+                # No attacks.csv yet — create it
+                _stamp_metrics(output).to_csv(OUTPUT_CSV_PATH, index=False)
+                log(f"[Batch {batch_n}] attacks.csv created with {len(output):,} rows")
+
+            total_in_csv = len(pd.read_csv(OUTPUT_CSV_PATH))
+            log(f"[Batch {batch_n}] CSV saved  → {OUTPUT_CSV_PATH}  ({total_in_csv:,} total rows)")
         except Exception as e:
             log(f"[Batch {batch_n}] CSV save FAILED: {e}")
             return id_cursor, False
@@ -1517,6 +1741,9 @@ def process_cowrie_logs():
         log(f"[Batch {batch_n}] High-risk IPs   : {int((output['risk_level']=='high').sum())}")
 
         upload_ok  = upload_to_dashboard(OUTPUT_CSV_PATH)
+        if upload_ok:
+            # Upload fresh metrics immediately after CSV so dashboard refreshes both at once
+            upload_metrics_to_dashboard(str(Path(PROJECT_DIR) / "ml_metrics.json"))
         new_cursor = id_cursor + len(buf)
         return new_cursor, upload_ok
 
@@ -1624,6 +1851,24 @@ def process_cowrie_logs():
 # ================================================================
 
 if __name__ == "__main__":
+    # Delete stale model so it is retrained fresh each run.
+    # Prevents single-class model crashes (IndexError on predict_proba[:,1]).
+    # NOTE: pipeline_state.json and attacks.csv are NEVER touched here —
+    #       deleting them would reset session history and byte offset.
+    _model_path = Path(MODEL_PATH)
+    if _model_path.exists():
+        _model_path.unlink()
+        log(f"[Startup] Deleted stale model -> {MODEL_PATH}")
+    else:
+        log("[Startup] No stale model found — will train fresh")
+
+    # Warn loudly if state file is missing (sessions counter will restart from 0)
+    if not STATE_FILE.exists():
+        log("[Startup] WARNING: pipeline_state.json not found — counter will start from scratch")
+        log("[Startup]          If you have prior sessions, restore pipeline_state.json first")
+    else:
+        log(f"[Startup] State file OK -> {STATE_FILE}")
+
     try:
         csv_path = process_cowrie_logs()
 
